@@ -66,6 +66,11 @@ engine-gpu-*.lock
 /launcher/
 /optimization-runs/
 
+# Local service credentials and machine-specific diagnostics.
+/agent/
+/logs/
+/kernel-capabilities.json
+
 # Optional local prompt models, runtime binaries and private rewrite caches.
 /optional/
 *.gguf
