@@ -36,6 +36,37 @@ e2e prompt="examples/prompt.txt" out="outputs/e2e.mp4" seconds="2": check-idle
 generate prompt out="outputs/video.mp4" seconds="2": check-idle
     uv run --no-sync python scripts/generate_video.py --prompt "$1" --out "$2" --seconds "$3"
 
+# 画像・first/last・seedなど、任意のCUIオプションを渡す
+video +args: check-idle
+    uv run --no-sync python scripts/generate_video.py "$@"
+
+# 人工的にレンダリングした立方体のfirst/lastから動画を生成
+demo-geometry: check-idle
+    uv run --no-sync python examples/render_geometry.py
+    uv run --no-sync python scripts/generate_video.py --prompt "A single solid orange cube slowly rotates 60 degrees around its vertical axis. Rigid straight edges, soft studio lighting, fixed camera, no cuts, quiet room ambience." --first-frame outputs/geometry-demo/first.png --last-frame outputs/geometry-demo/last.png --out outputs/geometry-demo/interpolation.mp4
+
+# GPUを使わないCUI引数・入力形式の検証
+test-cli:
+    uv run --no-sync python -m unittest discover -s tests -v
+
+# 金属・影・反射のある画像と参考動画をCPUで作成（Blenderが必要）
+render-studio:
+    blender --background --threads 4 --python examples/render_studio.py
+    uv run --no-sync python examples/encode_studio_guide.py
+
+# render-studioで作った銅の立方体をfirst/last指定で動かす
+demo-studio-keyframes: check-idle
+    uv run --no-sync python scripts/generate_video.py --prompt "Photorealistic 3D product render of a single solid copper cube with subtly rounded machined edges. The rigid cube starts rotating immediately and rotates at a constant slow speed around its vertical axis through 60 degrees from the first image to the last image. Preserve solid shape and consistent dimensions. Physically based copper reflections, soft studio lights, contact shadows and a matte floor. Locked camera, no cuts, no outlines, no deformation. Quiet room ambience, no music or speech." --first-frame outputs/studio-demo/first.png --last-frame outputs/studio-demo/last.png --out outputs/studio-demo/copper-first-last.mp4 --width 512 --height 320
+
+# 銅リングの画像＋別形状の参考動画から生成
+demo-studio-reference: check-idle
+    uv run --no-sync python scripts/generate_video.py --prompt "Photorealistic 3D product animation. Preserve the copper torus ring shown in <Picture 1>, including its circular hole, rounded tubular shape and polished metallic material. Use only the steady 60 degree vertical-axis rotation from <Video 1>, not its gray cuboid shape. One copper ring rotates smoothly in place, fixed center and size, resting on the studio floor. Fixed camera and realistic highlights, no cuts, no deformation, no extra objects. Quiet studio ambience." --reference-image outputs/studio-demo/target.png --reference-video outputs/studio-demo/motion-guide.mp4 --out outputs/studio-demo/ring-guided.mp4 --width 512 --height 320
+
+# 剛体回転の比較画像をCPUでレンダリングし、生成動画と並べる
+review-studio:
+    blender --background --threads 4 --python examples/render_studio.py -- --review-only
+    uv run --no-sync python examples/review_studio.py
+
 # 公式の複数ケース検証。e2eより長時間GPUを使用
 test: check-idle
     {{fv}} test --suite quick --plain --vram-gib 24 --ram-gib 64

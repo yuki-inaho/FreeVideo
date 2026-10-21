@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "output": "outputs/geometry-demo/interpolation.mp4",
+      "output_sha256": "d7542207a929bf13e981bd7ec32dc41837c9c326c6f11bbe8b34955aa32b167a",
+      "sources": {
+        "request.json": "outputs/geometry-demo/interpolation.request.json",
+        "engine.json": "outputs/geometry-demo/interpolation.engine.json",
+        "encoding.json": "outputs/geometry-demo/interpolation.encoding.json",
+        "engine.gpu.json": "outputs/geometry-demo/interpolation.engine.gpu.json"
+      },
+      "task": "fl2va",
+      "seed": 2026090901,
+      "width": 768,
+      "height": 448,
+      "frames": 56,
+      "fps": 24,
+      "request_seconds": 58.28001712204423,
+      "encoder_work_seconds": 10.196101183071733,
+      "video_work_seconds": 42.181047237012535,
+      "sampling_seconds": 33.17201786499936,
+      "encoder_torch_peak_allocated_bytes": 16134360064,
+      "encoder_torch_peak_reserved_bytes": 16231956480,
+      "video_device_peak_bytes": 7834304512,
+      "video_device_sampling_interval_seconds": 0.05,
+      "video_other_process_gpu_peak_percent": 0.0,
+      "video_other_process_checks": 26,
+      "runtime": {
+        "gpu_name": "NVIDIA GeForce RTX 5090",
+        "torch_version": "2.13.0+cu130",
+        "cuda_version": "13.0",
+        "driver_version": "595.99.02"
+      },
+      "cache_hits": {
+        "conditioning": false,
+        "resident_encoder": false,
+        "resident_engine": false
+      },
+      "effective_compute": {
+        "linear": "int8",
+        "attention": "sage2/sage2",
+        "base_steps": 8,
+        "refine_steps": 3
+      }
+    },
+    {
+      "output": "outputs/studio-demo/copper-first-last.mp4",
+      "output_sha256": "1adac6605e170dac271ec9c66582019510c99c43055de3715a0a776a2625d925",
+      "sources": {
+        "request.json": "outputs/studio-demo/copper-first-last.request.json",
+        "engine.json": "outputs/studio-demo/copper-first-last.engine.json",
+        "encoding.json": "outputs/studio-demo/copper-first-last.encoding.json",
+        "engine.gpu.json": "outputs/studio-demo/copper-first-last.engine.gpu.json"
+      },
+      "task": "fl2va",
+      "seed": 2026090901,
+      "width": 512,
+      "height": 320,
+      "frames": 56,
+      "fps": 24,
+      "request_seconds": 43.27267654205207,
+      "encoder_work_seconds": 7.366799150011502,
+      "video_work_seconds": 29.513178755994886,
+      "sampling_seconds": 21.448593951994553,
+      "encoder_torch_peak_allocated_bytes": 16064725504,
+      "encoder_torch_peak_reserved_bytes": 16089350144,
+      "video_device_peak_bytes": 7100301312,
+      "video_device_sampling_interval_seconds": 0.05,
+      "video_other_process_gpu_peak_percent": 0.0,
+      "video_other_process_checks": 20,
+      "runtime": {
+        "gpu_name": "NVIDIA GeForce RTX 5090",
+        "torch_version": "2.13.0+cu130",
+        "cuda_version": "13.0",
+        "driver_version": "595.99.02"
+      },
+      "cache_hits": {
+        "conditioning": false,
+        "resident_encoder": false,
+        "resident_engine": false
+      },
+      "effective_compute": {
+        "linear": "int8",
+        "attention": "sage2/sage2",
+        "base_steps": 8,
+        "refine_steps": 3
+      }
+    },
+    {
+      "output": "outputs/studio-demo/ring-guided.mp4",
+      "output_sha256": "8a6dc9c9df5f63cafe669779bd624173ef6a043be5db8220f0f62965aaa5e90c",
+      "sources": {
+        "request.json": "outputs/studio-demo/ring-guided.request.json",
+        "engine.json": "outputs/studio-demo/ring-guided.engine.json",
+        "encoding.json": "outputs/studio-demo/ring-guided.encoding.json",
+        "engine.gpu.json": "outputs/studio-demo/ring-guided.engine.gpu.json"
+      },
+      "task": "ref2va",
+      "seed": 2026090901,
+      "width": 512,
+      "height": 320,
+      "frames": 56,
+      "fps": 24,
+      "request_seconds": 43.099862594972365,
+      "encoder_work_seconds": 10.024112678947859,
+      "video_work_seconds": 27.18047960102558,
+      "sampling_seconds": 19.730869249091484,
+      "encoder_torch_peak_allocated_bytes": 16132198912,
+      "encoder_torch_peak_reserved_bytes": 16148070400,
+      "video_device_peak_bytes": 7484080128,
+      "video_device_sampling_interval_seconds": 0.05,
+      "video_other_process_gpu_peak_percent": 0.0,
+      "video_other_process_checks": 18,
+      "runtime": {
+        "gpu_name": "NVIDIA GeForce RTX 5090",
+        "torch_version": "2.13.0+cu130",
+        "cuda_version": "13.0",
+        "driver_version": "595.99.02"
+      },
+      "cache_hits": {
+        "conditioning": false,
+        "resident_encoder": false,
+        "resident_engine": false
+      },
+      "effective_compute": {
+        "linear": "int8",
+        "attention": "sage2/sage2",
+        "base_steps": 8,
+        "refine_steps": 3
+      }
+    }
+  ],
+  "measurement_scope": {
+    "request_seconds": "Single request wall time including encoder, model loading, sampling, decoding, saving and orchestration; excludes input rendering, model downloads and setup. Not shell-launch-to-exit time.",
+    "encoder_torch_peak_reserved_bytes": "Encoding-process PyTorch allocator reserved peak; excludes non-PyTorch CUDA allocations. Not a whole-device peak.",
+    "video_device_peak_bytes": "Whole-device sampled usage during video worker only, includes baseline and other device use; encoder is outside this sampling window.",
+    "full_request_device_peak": "Not measured. Do not merge or add allocator and device peaks.",
+    "comparison": "One observation per different input; flat and studio runs differ in resolution and prompts. Not a speedup comparison. Compilation and OS cache warmth not characterized."
+  }
+}

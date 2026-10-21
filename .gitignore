@@ -13,7 +13,8 @@ dist/
 *.log
 *.partial
 models/
-outputs/
+/outputs/
+/temp/
 .cache/
 *.safetensors
 *.pt
@@ -70,6 +71,7 @@ engine-gpu-*.lock
 /agent/
 /logs/
 /kernel-capabilities.json
+/encoder-workspace.json
 
 # Optional local prompt models, runtime binaries and private rewrite caches.
 /optional/
