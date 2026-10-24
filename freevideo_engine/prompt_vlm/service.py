@@ -6,6 +6,7 @@ from pathlib import Path
 import queue
 import secrets
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -220,7 +221,10 @@ class Service:
     def info(self, wait=True):
         """wait=False answers from the cheap check, for callers on an event loop or UI thread."""
         root, machine = self.installation()
-        spec = assets.catalog()
+        try:
+            spec = assets.catalog()
+        except (OSError, ValueError):
+            return dict(ready=False, model='', license='', bytes=0, busy=self.busy(), ram_bytes=self.ram_bytes(machine))
         return dict(ready=assets.settle(root) if wait else assets.ready(root), model=spec['repo'], license=spec['license'],
                     bytes=sum(row['bytes'] for row in spec['files']), busy=self.busy(),
                     ram_bytes=self.ram_bytes(machine))
@@ -287,12 +291,13 @@ class Service:
                 raise ValueError('model_missing')
             value = rules.request(value)
             from ..comfy_assets import resolve_assets
-            resolved = resolve_assets(json.dumps(value['media']), self.input_directory())
+            resolved = resolve_assets(json.dumps([dict(file=row['file'], role=row['role']) for row in value['media']]),
+                                      self.input_directory())
             for i, row in enumerate(value['media']):
                 path = (resolved['references'][i]['path'] if row['role'] == 'reference'
                         else resolved[row['role']])
                 from ..comfy_assets import media_kind
-                if media_kind(path) != 'image':
+                if media_kind(path) != row['kind']:
                     raise ValueError('unsupported_media')
                 row['path'] = path
         with self.mutex:
@@ -370,6 +375,18 @@ class Service:
         except Exception:
             pass
 
+    def video_frames(self, value, folder):
+        """The model reads pictures: a reference video is shown as its middle frame."""
+        for row in value.get('media', ()):
+            if row.get('kind') != 'video':
+                continue
+            self.check()
+            try:
+                from ..agent.media import sample_frames
+                row['path'] = sample_frames(row['path'], Path(folder) / str(row['number']), count=1)[0]['path']
+            except Exception:
+                raise ValueError('unreadable_video') from None
+
     def work(self, root, machine, action, value):
         from ..locking import runtime_lock
         from ..monitoring import save
@@ -394,18 +411,22 @@ class Service:
                     self.check()
                     self.progress(dict(phase='complete'))
                 else:
-                    self.infer(root, machine, descriptor, value)
+                    with tempfile.TemporaryDirectory(prefix='freevideo-prompt-', ignore_cleanup_errors=True) as frames:
+                        self.video_frames(value, frames)
+                        self.infer(root, machine, descriptor, value)
         except InterruptedError:
             self.progress(dict(phase='cancelled'))
         except BlockingIOError:
             self.progress(dict(phase='failed', error='busy'))
         except Exception as error:
-            known = {'disk_space', 'ram_space', 'rewrite_failed', 'split_failed', 'worker_exit', 'timeout', 'worker_cleanup_failed'}
-            self.progress(dict(phase='failed', error=str(error) if str(error) in known
+            known = {'disk_space', 'ram_space', 'unreadable_video', 'rewrite_failed', 'split_failed', 'worker_exit', 'timeout', 'worker_cleanup_failed'}
+            self.progress(dict(phase='failed', error='invalid_output' if isinstance(error, rules.InvalidOutput)
+                               else str(error) if str(error) in known
                                else 'download_failed' if action == 'install'
                                else 'ask_failed' if action == 'ask' else 'split_failed' if action == 'split'
                                else 'rewrite_failed',
-                               exception=type(error).__name__))
+                               exception=type(error).__name__,
+                               **({'output_rejection': error.details} if isinstance(error, rules.InvalidOutput) else {})))
         finally:
             if action != 'install':
                 self.stop_prestart(self.prewarm_state.get('reason', 'none'))
@@ -413,10 +434,14 @@ class Service:
                 self.progress(dict(phase='cancelled'))
             self.result_expires = time.monotonic() + 600
             # Allowlisted metadata only, never original/rewritten text or input paths.
+            # Output rejections contain condition IDs, counts, typed media labels and retry flags only.
             report = {key: item for key, item in self.state.items()
                       if key in ('phase', 'error', 'exception', 'error_details', 'timings', 'diagnostics',
-                                 'resources', 'cleanup', 'worker_returncode')}
-            spec = assets.catalog()
+                                 'resources', 'cleanup', 'worker_returncode', 'output_rejection')}
+            try:
+                spec = assets.catalog()
+            except (OSError, ValueError):
+                spec = dict(repo='', revision='')
             report.update(schema='freevideo.prompt-vlm', schema_version=2, action=action,
                           created_epoch=time.time(), report_id=uuid.uuid4().hex,
                           elapsed_seconds=time.monotonic() - started, model=spec['repo'],
@@ -580,7 +605,14 @@ class Service:
                 elif value.get('mode') == 'split':
                     rules.validate_parts(result.get('parts'), value)
                 else:
-                    rules.validate_output(result.get('text'), value)
+                    try:
+                        rules.validate_output(result.get('text'), value)
+                    except rules.InvalidOutput as error:
+                        stats = result.get('diagnostics') or {}
+                        error.details['retried'] = bool(stats.get('media_retry') or stats.get('picture_retry')
+                                                       or stats.get('dialogue_retry'))
+                        self.progress(dict(diagnostics=stats))
+                        raise
             self.progress(dict(result, worker_returncode=child.returncode))
         finally:
             releasing = result_received_at[0] if result_received_at else time.monotonic()

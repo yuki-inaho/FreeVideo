@@ -141,7 +141,7 @@ test('main browser entry registers both views and preserves node hooks', async t
             .replace("import { imageGenerationSupported } from './image_generation.js';", 'const imageGenerationSupported = () => true;')
             .replace("import { uploadMedia } from './media_upload.js';", 'const {uploadMedia} = globalThis.__freevideoEntryTest;')
             .replace("import { createCastLibrary } from './cast_library.js';", 'const {createCastLibrary} = globalThis.__freevideoEntryTest;')
-            .replace("import { agentInterfaceEnabled } from './agent_connect.js';", 'const agentInterfaceEnabled = async () => false;')
+            .replace("import { agentInterfaceState } from './agent_connect.js';", "const agentInterfaceState = async () => 'off';")
             .replace("import { installNativeErrorGuard } from './native_errors.js';", 'const installNativeErrorGuard = () => {};')
             .replace("import { installTranslateGuard } from './translate_guard.js';", 'const installTranslateGuard = () => {};');
         await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));

@@ -15,7 +15,7 @@ import { startDoneNotify, askDesktopPermission, DESKTOP_SETTING } from './done_n
 import { installNavigation, refreshNavigation, preferredView, collapseWorkspaces } from './view_navigation.js';
 import { isLaunchVisit } from './launch_visit.js';
 import { openFreeVideoWorkflow } from './launcher.js';
-import { agentInterfaceEnabled } from './agent_connect.js';
+import { agentInterfaceState } from './agent_connect.js';
 import { attachReferencePicker, referenceItems, syncReferencePrompt, referenceInputs, mediaRows } from './prompt_references.js';
 import { expandCast } from './cast_mention.js';
 import { outputDownloadURL } from './output_download.js';
@@ -229,7 +229,8 @@ function mediaPanel(node, mount = null) {
         finally { node.isUploading = false; add.disabled = false; addAudio.disabled = false; }
     }
     async function newImage() {
-        if (node.isUploading || read().length >= 32) return;
+        if (node.isUploading) return;
+        if (read().length >= 32) { message(text('The media list is full (32 items, including disabled ones). Remove some to add more.', '素材已满 32 个（含未启用的），请先移除不用的素材。'), true); return; }
         const library = read().filter(row => mediaKind(row.file) === 'image')
             .map(row => ({file: row.file, label: (row.source || row.file).split('/').pop()}));
         let outcome;
@@ -237,7 +238,8 @@ function mediaPanel(node, mount = null) {
             outcome = await openImageEditor({target: videoSize(), role: role.value, t: text,
                 resolve: viewURL, upload: uploadOne, library});
         } catch { message(text('This image cannot be edited right now; choose an image again.', '图片暂时无法编辑，可重新选择图片。'), true); return; }
-        if (!outcome?.blob || read().length >= 32) return;
+        if (!outcome?.blob) return;
+        if (read().length >= 32) { message(text('The media list is full (32 items, including disabled ones). Remove some to add more.', '素材已满 32 个（含未启用的），请先移除不用的素材。'), true); return; }
         node.isUploading = true; add.disabled = addAudio.disabled = generateImage.disabled = true;
         try {
             const result = await uploadOne(new File([outcome.blob], outcome.name, {type: outcome.blob.type}));
@@ -700,7 +702,7 @@ app.registerExtension({
     beforeConfigureGraph() { configuringGraph = true; configuration++; },
     async setup() {
         // One failing part must not take the others down; health.js shows what failed.
-        for (const [where, start] of [['progress', () => progressConnection.start()], ['navigation', () => installNavigation(showStudio, agentInterfaceEnabled(api), {openWorkflow: openFreeVideoWorkflow})],
+        for (const [where, start] of [['progress', () => progressConnection.start()], ['navigation', () => installNavigation(showStudio, agentInterfaceState(api), {openWorkflow: openFreeVideoWorkflow, recheck: () => agentInterfaceState(api)})],
             ['updates', startUpdateChecks], ['done-notify', () => startDoneNotify({api, text, desktop: desktopNoticeEnabled, isFreeVideoNode})],
             ['whitebox', () => startWhiteboxWorker({api})]]) {
             try { start(); } catch (error) { health({type: 'error', where, error}); }

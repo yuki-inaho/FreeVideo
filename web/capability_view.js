@@ -383,7 +383,25 @@ export function createCapabilityView({node, api, t, getState, onPick, onEstimate
         const i = grid.sizes.findIndex(s => s.width === Number(value(node, 'width')) && s.height === Number(value(node, 'height')));
         const j = grid.lengths.findIndex(l => l.seconds === Number(value(node, 'seconds')));
         const seconds = tier?.estimate_seconds?.[i]?.[j];
-        return positive(seconds) ? aboutTime(seconds, t) : '';
+        if (!positive(seconds)) return '';
+        // The suffix stays in one piece so a narrow line moves it whole to the next line.
+        return aboutTime(seconds, t) + (grid.machine?.compile_owed === true ? t(' · \u2060includes\u00a0first-time\u00a0setup', ' · \u2060含\u2060首\u2060次\u2060准\u2060备') : '');
+    }, warning(steps, twoPass, refine, stepCache = null, upscale = 2) {
+        if (!grid || !surface) return '';
+        const tier = gridTier(grid, steps, twoPass, refine, stepCache, upscale);
+        const i = grid.sizes.findIndex(s => s.width === Number(value(node, 'width')) && s.height === Number(value(node, 'height')));
+        const j = grid.lengths.findIndex(l => l.seconds === Number(value(node, 'seconds')));
+        const code = tier?.plan?.[i]?.[j];
+        if (!(code > 0) || !positive(tier.estimate_seconds?.[i]?.[j])) return '';
+        const why = tier.slow_by?.[i]?.[j];
+        const head = why === 'gpu_memory' ? t('Not enough graphics memory, so this will be slow.', '显存不足，这次会很慢。')
+            : why === 'memory' ? t('Not enough RAM, so this will be slow.', '内存不足，这次会很慢。') : t('This will be slow.', '这次会很慢。');
+        // One remedy only, and only when it really removes the slowdown.
+        const levels = effortsFrom(grid), at = levels.findIndex(l => grid.tiers?.[l.name.toLowerCase()] === tier);
+        const lower = at > 0 && levels.slice(0, at).some(l => { const row = grid.tiers?.[l.name.toLowerCase()]; return row?.plan?.[i]?.[j] === 0 && positive(row.estimate_seconds?.[i]?.[j]); });
+        if (lower) return head + t(' ', '') + t('Choose a lower Quality level.', '请把质量降低一档。');
+        const smaller = tier.plan.slice(0, i).some((row, k) => row[j] === 0 && positive(tier.estimate_seconds?.[k]?.[j]) && grid.sizes[k].pixels < grid.sizes[i].pixels);
+        return smaller ? head + t(' ', '') + t('Choose a smaller size.', '请缩小尺寸。') : head;
     }, dispose() {
         disposed = true; controller?.abort(); clearTimeout(retry); observer.disconnect();
         api.removeEventListener('freevideo_capabilities', changed); window.removeEventListener('pointerdown', outside);

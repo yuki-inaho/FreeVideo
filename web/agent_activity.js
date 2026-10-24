@@ -77,7 +77,7 @@ function row(job, t, api, refresh, open, cancellationErrors) {
     if (job.status === 'running' && p.remaining_seconds > 0) meta.push(left(p.remaining_seconds, t));
     const reason = job.status === 'failed' && REASONS[job.error?.code];
     if (reason) meta.push(t(...reason));
-    else if (job.status === 'failed') meta.push(t(job.error?.message || 'Did not finish', job.error?.error_zh || '没有完成'));
+    else if (job.status === 'failed') meta.push(t(job.error?.error_en || 'Did not finish', job.error?.error_zh || '没有完成'));
     if (job.project) meta.push(job.project);
     const foot = el('div', 'fv-agent-foot');
     const details = el('p', 'fv-agent-meta', meta.join(' · '));

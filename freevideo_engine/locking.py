@@ -6,10 +6,12 @@ therefore still excludes every device. Without this split one measurement
 occupied an entire multi-GPU host.
 """
 from contextlib import contextmanager
+import math
 import os
 from pathlib import Path
 import re
 import sys
+import time
 
 
 from .paths import data_root
@@ -17,6 +19,7 @@ from .system import windows
 from .processes import inherited_fd
 LOCK_PATH = Path(os.environ.get('FREEVIDEO_LOCK_PATH', data_root() / 'engine.lock'))
 LOCK_ENV = 'FREEVIDEO_RUNTIME_LOCK_FD'
+ENGINE_BUSY = 'Setup, testing or generation is already using this installation/GPU lock. Retry after it finishes.'
 
 
 def lock_holders(paths):
@@ -56,7 +59,10 @@ def device_lock_path(device, path=None):
 
 
 @contextmanager
-def runtime_lock(path=None, *, inherit=True, shared=False):
+def runtime_lock(path=None, *, inherit=True, shared=False, wait_seconds=0):
+    """Take a lease, optionally waiting a bounded time for acquisition only."""
+    if not math.isfinite(wait_seconds) or wait_seconds < 0:
+        raise ValueError('Runtime lock wait must be finite and nonnegative')
     path = Path(path or os.environ.get('FREEVIDEO_LOCK_PATH', data_root() / 'engine.lock'))
     path.parent.mkdir(parents=True, exist_ok=True)
     inherited = inherited_fd() if inherit else None
@@ -71,23 +77,36 @@ def runtime_lock(path=None, *, inherit=True, shared=False):
     try:
         # An inherited descriptor shares the parent's open-file description.
         # Close our descriptor on exit; do not unlock the parent's live work.
-        if windows():
-            if inherited is None:
-                import msvcrt
-                if path.stat().st_size == 0:
-                    stream.write(b'\0')
-                    stream.flush()
-                stream.seek(0)
-                try:
-                    msvcrt.locking(stream.fileno(),
-                                   msvcrt.LK_NBRLCK if shared else msvcrt.LK_NBLCK, 1)
-                except OSError as error:
-                    raise BlockingIOError('Another process holds the installation lease') from error
-            # The parent holds the byte-range lock; its Job Object owns this
-            # worker tree. Closing a duplicated child handle must not unlock it.
-        else:
-            import fcntl
-            fcntl.flock(stream, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                if windows():
+                    if inherited is None:
+                        import msvcrt
+                        if path.stat().st_size == 0:
+                            stream.write(b'\0')
+                            stream.flush()
+                        stream.seek(0)
+                        try:
+                            msvcrt.locking(stream.fileno(),
+                                           msvcrt.LK_NBRLCK if shared else msvcrt.LK_NBLCK, 1)
+                        except OSError as error:
+                            raise BlockingIOError('Another process holds the installation lease') from error
+                    # The parent holds the byte-range lock; its Job Object owns this
+                    # worker tree. Closing a duplicated child handle must not unlock it.
+                else:
+                    import fcntl
+                    fcntl.flock(stream, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(0.075, remaining))
+                # A delayed wakeup must not start another attempt after budget.
+                if time.monotonic() >= deadline:
+                    raise
+        # The body is outside the retry loop: a failed request must never rerun.
         yield stream.fileno()
     finally:
         # Releasing the lease must not discard completed work. Taking it still

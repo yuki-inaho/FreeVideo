@@ -89,6 +89,7 @@ ERRORS.update({
     'needs_confirmation': (409, False, 'The user must approve this operation first.', 'Wait with freevideo_wait (no id) for the user\'s answer; once approved, repeat the same call unchanged.'),
     'declined_by_user': (409, False, 'The user declined this operation.', 'Do not repeat this call; change the plan or ask the user what they want instead.'),
     'stopped_by_user': (409, False, 'The user stopped this session.', 'Wait for the user to continue the session; do not retry or start a new one.'),
+    'turn_abandoned': (409, False, 'The user gave up on this turn.', 'Stop working on it. Wait for the next message from the user; do not retry.'),
     'reshoot_limit': (409, False, 'This shot reached its generation limit.', 'Choose the best existing take, rewrite the shot, or ask the user.'),
     'production_limit': (409, False, 'This film reached its child job limit.', 'Choose existing takes or ask the user how to reduce the film.'),
     'managed_by_production': (409, False, 'This job belongs to a film and cannot be resumed on its own.', 'This take belongs to a film; reshoot the shot or wait for the user to continue.'),
@@ -131,6 +132,8 @@ IMAGE_REASONS = {
                            '显卡暂时用不了，稍后再试。'),
     'worker_exit': ('Image generation stopped unexpectedly. Try again.', '图像生成意外停止了，请再试一次。'),
     'timeout': ('This image took too long and was stopped. Try again.', '这一张用时太长，已停止。请再试一次。'),
+    'disk_full': ('Saving the image failed: the disk is full. Free some space, then generate again.',
+                  '保存图片时出错：磁盘空间不够，空出空间后再生成。'),
     'generation_failed': ('Image generation ran into an error. Try again.', '图像生成出错了，请再试一次。'),
     'invalid_media': ('The reference image could not be read. Choose another one.',
                       '参考图读不出来，请换一张。'),
@@ -148,7 +151,7 @@ def image_failure(code, report_id=None):
     valid = isinstance(report_id, str) and re.fullmatch(r'[0-9a-f]{32}', report_id)
     return dict(reason=dict(en=en, zh=zh), report_id=report_id if valid and code not in (
         'busy', 'cancelled', 'invalid_request', 'invalid_media', 'invalid_prompt', 'invalid_dimensions',
-        'invalid_seed', 'too_many_images') else None)
+        'invalid_seed', 'too_many_images', 'disk_full') else None)
 
 
 # Recovery is a function of the committed task and phase, not just an error code.
@@ -171,6 +174,7 @@ IMAGE_ERRORS = {
     'timeout': IMAGE_REASONS['timeout'][0],
     'generation_failed': IMAGE_REASONS['generation_failed'][0],
     'worker_exit': 'The image worker stopped before finishing this picture.',
+    'disk_full': IMAGE_REASONS['disk_full'][0],
     'cancelled': 'The picture job was cancelled.',
 }
 for _code, _message in IMAGE_ERRORS.items():
@@ -214,6 +218,8 @@ def recovery(code, *, kind=None, stage='request', resumable=True):
         return SESSION_GONE[1]
     if kind == 'image' and code == 'pack_missing':
         return ERRORS[code][3]
+    if kind == 'image' and code == 'disk_full':
+        return 'Tell the user to free disk space, then submit the picture again with a new ref.'
     if kind == 'image' and code == 'no_memory':
         return 'Lower the picture dimensions or use fewer reference pictures, then submit with a new ref.'
     if kind in RECOVERY and stage == 'terminal':
@@ -282,6 +288,7 @@ FAILURE_REASONS_ZH = {
     'join_failed': '片段已生成，但拼接成片时出错',
     'invalid_output': '生成的结果无法读取或保存',
     'storage_unavailable': '任务记录或素材无法写入磁盘',
+    'disk_full': '磁盘空间不够，图片没能保存',
     'submit_interrupted': '提交生成时服务中断，尚未确认任务是否开始',
     'timeout': '生成等了太久没有结果',
     'invalid_media': '参考素材无法读取',
@@ -299,6 +306,54 @@ FAILURE_REASONS_ZH = {
     'generation_failed': '生成没有完成',
     'internal_error': '没有完成',
 }
+FAILURE_REASONS_EN = {
+    'lan_unavailable': 'Phone access requires FreeVideo installed with the launcher',
+    'out_of_memory': 'Graphics or system memory ran out during generation',
+    'insufficient_memory': 'There is not enough free graphics or system memory for this generation',
+    'no_memory': 'There is not enough free graphics or system memory for this picture',
+    'ram_space': 'System memory ran out while loading the model',
+    'model_missing': 'A required model is not installed yet',
+    'pack_missing': 'The image model is not installed yet',
+    'not_ready': 'The generation environment is not installed yet',
+    'cancelled': 'Generation was stopped',
+    'stopped_by_user': 'Generation was stopped',
+    'interrupted': 'Generation was interrupted',
+    'worker_exit': 'Picture generation was interrupted',
+    'closed': 'The picture generation service has closed',
+    'image_unavailable': 'The picture generation service has not started yet',
+    'vlm_unavailable': 'The model that reads pictures has not started yet',
+    'vlm_failed': 'The picture could not be read',
+    'vlm_invalid_json': 'The reply could not be read',
+    'context_length': 'The description and reference pictures are too long',
+    'dependency_failed': 'A task this one depends on did not finish',
+    'lost': 'The generation service no longer has the result of this task',
+    'unknown_job': 'The picture generation service cannot find this task',
+    'not_found': 'This task or media file cannot be found',
+    'source_missing': 'The previous video needed to continue is no longer available',
+    'chain_missing': 'The generation record needed to continue is no longer available',
+    'chain_unavailable': 'The part-by-part generation service has not started yet',
+    'continuation_unavailable': 'The current generation mode cannot continue a video',
+    'join_failed': 'The parts were generated, but joining them into one video failed',
+    'invalid_output': 'The result could not be read or saved',
+    'storage_unavailable': 'The task record or media could not be written to disk',
+    'disk_full': 'Saving the image failed: the disk is full',
+    'submit_interrupted': 'The service stopped during submission, so it is not confirmed whether the task started',
+    'timeout': 'Generation took too long without a result',
+    'invalid_media': 'The reference media could not be read',
+    'clip_unreadable': 'The generated character reference video could not be read',
+    'invalid_request': 'The generation settings are outside the supported range',
+    'invalid_drama': 'The short film settings are invalid',
+    'reshoot_limit': 'This shot has reached its generation limit',
+    'production_limit': 'This short film has reached its task limit',
+    'export_failed': 'Exporting the video failed',
+    'invalid_prompt': 'The picture description is empty or too long',
+    'invalid_dimensions': 'The picture size is outside the supported range',
+    'too_many_images': 'There are more reference pictures than supported',
+    'chain_too_long': 'The continued video has more parts than supported',
+    'chain_rejected': 'The generation service cannot use these settings',
+    'generation_failed': 'Generation did not finish',
+    'internal_error': 'Did not finish',
+}
 FAILURE_MESSAGES_ZH = {
     'The previous video is too short to continue; it needs to be at least 1.7 s long.': '接续的上一段视频太短，至少需要 1.7 秒',
     'The previous video has no usable continuation data. Generate it again with this version of FreeVideo.': '上一段视频缺少可用的接续数据',
@@ -309,14 +364,18 @@ FAILURE_MESSAGES_ZH = {
 }
 
 
-def failure_reason(error):
-    if isinstance(error.get('error_zh'), str) and error['error_zh'].strip():
-        return error['error_zh']
+def _failure_line(error):
     lines = str(error.get('message') or '').strip().splitlines()
     line = lines[0] if lines else ''
     if line.startswith('FreeVideo generation failed') and len(lines) > 1:
         line = lines[1].strip()
-    line = re.sub(r'^(?:[\w.]*Error|[\w.]*Exception):\s*', '', line)
+    return re.sub(r'^(?:[\w.]*Error|[\w.]*Exception):\s*', '', line)
+
+
+def failure_reason(error):
+    if isinstance(error.get('error_zh'), str) and error['error_zh'].strip():
+        return error['error_zh']
+    line = _failure_line(error)
     if line in FAILURE_MESSAGES_ZH:
         return FAILURE_MESSAGES_ZH[line]
     if line.startswith(('CUDA out of memory', 'MPS backend out of memory')):
@@ -324,8 +383,24 @@ def failure_reason(error):
     return FAILURE_REASONS_ZH.get(error.get('code'), '没有完成')
 
 
+# The same lookup in English for the page: the specific sentences are already written for people.
+def failure_reason_en(error):
+    if isinstance(error.get('error_en'), str) and error['error_en'].strip():
+        return error['error_en']
+    line = _failure_line(error)
+    if line in FAILURE_MESSAGES_ZH:
+        return line
+    if line.startswith(('CUDA out of memory', 'MPS backend out of memory')):
+        return FAILURE_REASONS_EN['out_of_memory']
+    return FAILURE_REASONS_EN.get(error.get('code'), 'Did not finish')
+
+
+def reasons(error):
+    return dict(error_zh=failure_reason(error), error_en=failure_reason_en(error))
+
+
 def with_reason(error):
-    return dict(error, error_zh=failure_reason(error)) if error else error
+    return dict(error, **reasons(error)) if error else error
 
 
 def build(code, *, details=None, request=None, validation=False, message=None, next_action=None,

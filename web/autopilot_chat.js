@@ -32,6 +32,12 @@ export const WHITEBOX_PREVIEW = Object.freeze({
 });
 let chatNumber = 0;
 
+// What the agent is doing before it answers, by the key it reports. Words the page does not know are not shown.
+export const STAGE_TEXT = Object.freeze({
+    reading: ['Reading the request', '正在理解要求'], scripting: ['Writing the script', '正在写剧本'],
+    storyboarding: ['Planning the shots', '正在拆分镜头'], prompting: ['Writing the shot prompts', '正在写画面描述'],
+    checking: ['Checking the results', '正在检查结果'], assembling: ['Joining the shots', '正在拼接镜头'],
+});
 const WORKING = ['running', 'queued', 'waiting', 'cancelling'], VIDEOS = ['generate', 'assemble'];
 // What a job with no picture of its own is doing, in the reader's language.
 const QUIET = {vlm: ['Checking', '检查中'], enhance: ['Enhancing prompt', '增强提示词']};
@@ -45,10 +51,12 @@ const WHITEBOX = {
 const GENERIC_FAILURE_ZH = '没有完成';
 // Sends and failure cards use the same public reason, including the engine's Chinese mapping.
 function failureReason(value, t) {
-    const error = value.error, reason = error?.error_zh || value.error_zh;
+    const error = value.error, reason = error?.error_zh || value.error_zh, reasonEn = error?.error_en || value.error_en;
     if (error?.code === 'session_full' && (!reason || reason === GENERIC_FAILURE_ZH))
         return t('This chat is full. Click "New chat".', '这个对话已满，请点“新对话”。');
-    return t(error?.message || 'Did not finish', reason || GENERIC_FAILURE_ZH);
+    // `message` is written for programs; people read the engine's own English reason. A refusal the engine
+    // did not classify keeps its sentence, as before.
+    return t(reasonEn || error?.message || 'Did not finish', reason || GENERIC_FAILURE_ZH);
 }
 
 export {about};
@@ -125,6 +133,18 @@ export function cardLine(said, job, t) {
     if (job.status === 'running' && (stepped(p) || SAVING.includes(p.phase))) said.last = job;
     return jobLine(said.last || job, t);
 }
+// The generation page's rule: three minutes without a new step or stage and the card says it is still going.
+export const STALL_MS = 180000;
+export const progressKey = job => { const p = job.progress || {}; return JSON.stringify([job.status, p.phase, p.step, p.block, p.fraction]); };
+// The one thing a hidden tab announces in its title, most pressing first: a question, a failure, a finished job.
+// `seen` holds the finished jobs the user already had in front of them when the tab was hidden.
+export function tabNotice(jobs, asked, seen) {
+    if (asked) return 'ask';
+    const fresh = Object.values(jobs).filter(job => !QUIET[job.kind] && !WORKING.includes(job.status) && !seen.has(job.id));
+    if (fresh.some(job => jobMode(job) === 'failed')) return 'failed';
+    return fresh.some(job => jobMode(job) === 'done') ? 'done' : null;
+}
+const TAB_PREFIX = {ask: ['Needs your OK · ', '要确认 · '], failed: ['Failed · ', '出错了 · '], done: ['Done · ', '已完成 · ']};
 export function jobMeta(job, t) {
     const parts = [];
     if (job.width > 0 && job.height > 0) parts.push(`${job.width} × ${job.height}`);
@@ -224,6 +244,25 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
     const form = el('form', 'fv-chat-input'), input = el('textarea'), sendButton = el('button', 'fv-chat-send');
     input.rows = 1; input.maxLength = 8000; input.setAttribute('aria-label', t('Message the agent', '对 Agent 说'));
     sendButton.type = 'submit'; sendButton.setAttribute('aria-label', t('Send', '发送')); sendButton.append(glyph('M12 19V5M5 12l7-7 7 7'));
+    // While the agent is thinking and has started nothing, the send key is the stop key: same place, a solid square.
+    let stopMode = false;
+    const SEND_GLYPH = 'M12 19V5M5 12l7-7 7 7', STOP_GLYPH = 'M7 7h10v10H7z';
+    function refreshSend() {
+        const label = stopMode ? t('Stop', '停止') : t('Send', '发送');
+        sendButton.classList.toggle('fv-chat-halt', stopMode);
+        sendButton.setAttribute('aria-label', label); sendButton.title = stopMode ? label : '';
+        sendButton.querySelector('path').setAttribute('d', stopMode ? STOP_GLYPH : SEND_GLYPH);
+        sendButton.disabled = stopMode ? false : !composeAllowed() || draftSending() || !input.value.trim();
+    }
+    async function abandon() {
+        const session = state.session;
+        if (!session || state.abandoned) return;
+        state = {...state, abandoned: true, stage: null}; render();
+        input.focus();
+        let done = false;
+        try { done = (await dataLayer.abandon(session)).ok; } catch {}
+        if (!done && state.session === session) { state = {...state, abandoned: false}; render(); say(t('Could not stop. Click again.', '没能停止，请再点一次。')); }
+    }
     let whiteboxPreview = false;
     try { whiteboxPreview = localStorage.getItem(WHITEBOX_PREVIEW.storageKey) === 'true'; } catch {}
     const whiteboxButton = press('fv-chat-whitebox', null, () => setWhiteboxPreview(!whiteboxPreview));
@@ -632,6 +671,8 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
         return row ? row.seconds : null;
     }
     const active = () => !stopped && element.isConnected && !document.hidden && shown();
+    // A hidden page keeps reading, slowly, so that its title can tell what happened.
+    const reading = () => !stopped && element.isConnected && shown();
     const inSelectedChat = () => !creating && (!selectedSession || selectedSession === state.session);
     const composeAllowed = () => inSelectedChat() && state.agent.connected === true;
     const sendingAllowed = () => inSelectedChat() && canSend(state);
@@ -678,8 +719,10 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
                     status.append(error, retry, report); item.append(status);
                 }
                 quoted(error, entry.error || ''); error.hidden = !entry.error;
-                // Waiting for the agent to come back is not a fault.
-                report.hidden = !entry.error || !!entry.automatic;
+                // Waiting for the agent to come back, or the user editing a queued message, is not a fault.
+                const calm = !!entry.automatic || entry.errorCode === 'edited';
+                report.hidden = !entry.error || calm;
+                error.classList.toggle('fv-chat-calm', calm); error.setAttribute('role', calm ? 'status' : 'alert');
                 const full = entry.errorCode === 'session_full';
                 retry.textContent = full ? t('New chat', '新对话') : t('Retry', '重试');
                 retry.disabled = entry.sending || (full ? creating : !sendingAllowed());
@@ -705,6 +748,13 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
         const stop = press('fv-chat-stop', null, () => void cancelJobs([job.id]));
         foot.append(left, stop); info.append(head, middle, foot); item.replaceChildren(box, info);
         const said = {};
+        // Three minutes without a new step or stage: the card says so, once, in the line that names the stage.
+        let signature = null, changed = performance.now(), quiet = false;
+        const stalled = next => {
+            const key = progressKey(next);
+            if (key !== signature) { signature = key; changed = performance.now(); }
+            return next.status === 'running' && performance.now() - changed >= STALL_MS;
+        };
         // The number rides on the water, and goes under the line once there is no room left above it.
         const level = next => {
             const fraction = fractionOf(next);
@@ -715,8 +765,9 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
             const seconds = leftOf(next);
             left.textContent = seconds === null ? '' : about(seconds, t);
         };
-        item.tick = () => level(state.jobs[job.id] || job);
-        return next => {
+        let current = job, draw = null;
+        item.tick = () => { current = state.jobs[job.id] || job; level(current); if (stalled(current) !== quiet) draw?.(current); };
+        return draw = next => {
             const cells = jobParts(next);
             level(next);
             name.textContent = jobName(next, t); meta.textContent = jobMeta(next, t); meta.hidden = !meta.textContent;
@@ -726,8 +777,10 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
             parts.hidden = !cells.length;
             const block = next.progress?.block;
             const where = cardLine(said, next, t);
-            part.textContent = cells.length ? t(`Part ${block.index} / ${block.total}`, `第 ${block.index} / ${block.total} 段`) : where;
-            step.textContent = cells.length ? where : '';
+            quiet = stalled(next);
+            const waiting = t('Progress has not updated recently; generation is still running.', '进度暂未更新，仍在生成中。');
+            part.textContent = cells.length ? t(`Part ${block.index} / ${block.total}`, `第 ${block.index} / ${block.total} 段`) : quiet ? waiting : where;
+            step.textContent = cells.length ? quiet ? waiting : where : '';
             const going = stopping.has(next.id) || next.status === 'cancelling';
             stop.disabled = going; stop.textContent = going ? t('Stopping…', '正在停止…') : t('Stop', '停止');
             stop.setAttribute('aria-busy', String(going));
@@ -908,7 +961,13 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
         };
         buttons.append(press('fv-chat-yes fv-primary', t(...WHITEBOX.generate), answer(true)),
             press('fv-whitebox-edit', t(...WHITEBOX.edit), () => {
-                if (!disabled && whiteboxState(entry) === 'asked') input.focus();
+                if (disabled || whiteboxState(entry) !== 'asked') return;
+                // The summary goes into an empty box with the cursor after it; what the user has already typed stays.
+                const text = entry.whitebox.summary || entry.whitebox.scene_summary || '';
+                if (text && !input.value.trim()) { input.value = text; input.dispatchEvent(new Event('input')); }
+                input.focus();
+                input.setSelectionRange(input.value.length, input.value.length);
+                input.scrollTop = input.scrollHeight;
             }), press('fv-chat-no fv-quiet', t(...WHITEBOX.decline), answer(false)));
         item.replaceChildren(preview, summary, seconds, buttons, status, error);
         return {update(next) {
@@ -967,7 +1026,9 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
             buttons.querySelectorAll('button').forEach(button => { button.disabled = disabled; });
             const question = el('p', null, entry.question);
             const estimate = el('p', 'fv-chat-meta', entry.estimate_seconds > 0 ? about(entry.estimate_seconds, t) : ''); estimate.hidden = !estimate.textContent;
-            item.replaceChildren(question, estimate, buttons);
+            // What is about to be made, written as on the job card; a question that carries no size or length shows only the time.
+            const shape = el('p', 'fv-chat-meta', jobMeta(entry, t)); shape.hidden = !shape.textContent;
+            item.replaceChildren(question, shape, estimate, buttons);
             if (error) {
                 const notice = el('p', 'fv-chat-error', error); notice.setAttribute('role', 'alert');
                 item.append(notice, issueButton(t, () => ({where: CHAT_ISSUE, message: error})));
@@ -990,8 +1051,9 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
     }
     function dots() {
         const item = el('li', 'fv-chat-thinking'), mark = el('span', 'fv-chat-dots'); mark.append(el('i'), el('i'), el('i'));
-        item.setAttribute('role', 'status'); item.setAttribute('aria-label', t('Thinking', '正在思考')); item.append(mark);
-        return {element: item, update() {}};
+        const activity = el('span', 'fv-chat-activity');
+        item.setAttribute('role', 'status'); item.setAttribute('aria-label', t('Thinking', '正在思考')); item.append(mark, activity);
+        return {element: item, update(text) { activity.textContent = text || ''; activity.hidden = !text; }};
     }
     const MAKE = {hello, examples, dots, user: () => message('user'), agent: () => message('agent'), job: jobCard, confirm: confirmCard};
 
@@ -1029,8 +1091,10 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
         if (!said) wanted.push(['examples', 'examples', null]);
         // The agent has the sentence, or is waiting for one, and has not answered yet.
         const tail = localPending.at(-1) || entries.at(-1);
-        if (tail?.type !== 'job' && tail?.type !== 'confirm' && (localPending.some(entry => !entry.error) || !tail?.error && tail?.role === 'user') && state.agent.connected === true
-            && (state.agent.listening !== false || tail.taken === true)) wanted.push(['dots', 'dots', null]);
+        const thinking = tail?.type !== 'job' && tail?.type !== 'confirm' && (localPending.some(entry => !entry.error) || !tail?.error && tail?.role === 'user') && state.agent.connected === true
+            && (state.agent.listening !== false || tail.taken === true) && (localPending.length > 0 || !state.abandoned);
+        stopMode = thinking && localPending.length === 0;
+        if (thinking) wanted.push(['dots', 'dots', Object.hasOwn(STAGE_TEXT, state.stage) ? t(...STAGE_TEXT[state.stage]) : null]);
 
         const stick = follow || pinned;
         const before = log.children.length, keep = new Set(wanted.map(([key]) => key));
@@ -1044,7 +1108,7 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
         const sendable = sendingAllowed();
         input.disabled = state.agent.connected !== true || creating || !!selectedSession && selectedSession !== state.session;
         input.placeholder = state.agent.connected === true && !sendable ? t('Ask your agent to continue', '请在 Agent 里让它继续') : t('Message the agent…', '对 Agent 说…');
-        sendButton.disabled = !composeAllowed() || draftSending() || !input.value.trim();
+        refreshSend();
         if (focusSession === state.session && focusSession && !input.disabled && active()) { focusSession = null; input.focus(); }
         if (stick) { pinned = true; scroller.scrollTop = scroller.scrollHeight; down.hidden = true; }
         else if (log.children.length > before) down.hidden = false;
@@ -1143,14 +1207,14 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
         // At most five lines; the box scrolls after that.
         const line = (typeof getComputedStyle === 'function' && parseFloat(getComputedStyle(input).lineHeight)) || 22;
         input.style.height = `${Math.min(input.scrollHeight, Math.round(line * 5) + 14)}px`;
-        sendButton.disabled = !composeAllowed() || draftSending() || !input.value.trim();
+        refreshSend();
     }
     input.addEventListener('input', () => {
         if (entryDraft !== null) entryDraft = input.value;
         saveDraft();
         // Editing a queued draft cancels its automatic delivery. Its original message remains available for manual retry.
         for (const entry of pending) if (entry.automatic && entry.session === draftSession && entry.draft !== drafts.get(draftSession)) {
-            entry.automatic = false;
+            entry.automatic = false; entry.errorCode = 'edited';
             entry.error = t('The message changed. Click "Retry" to send the original.', '消息已修改，点“重试”发送原消息。');
             say('');
         }
@@ -1160,10 +1224,11 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
     // Enter sends, Shift+Enter starts a new line; Enter that confirms an input-method candidate does neither.
     input.addEventListener('keydown', event => {
         if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
-        event.preventDefault(); form.requestSubmit();
+        event.preventDefault(); if (!stopMode) form.requestSubmit();
     });
     form.addEventListener('submit', event => {
         event.preventDefault();
+        if (stopMode) { void abandon(); return; }
         const text = input.value;
         const draft = saveDraft();
         if (!text.trim() || !composeAllowed() || draftSending()) return;
@@ -1181,9 +1246,9 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
         clearTimeout(timer); timer = null;
         if (stopped) return;
         if (busy) { reread = true; return; }
-        if (!active()) return;
+        if (!reading()) return;
         busy = true; reread = false;
-        void readConversations();
+        if (!document.hidden) void readConversations();
         const readSelection = selection, requested = selectedSession;
         let again = false;
         try {
@@ -1231,8 +1296,8 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
         known = true;
         // The next read is booked before the page hears of this one, so the page's sync() does not start another.
         const idle = state.agent.connected !== true && !state.active;
-        timer = setTimeout(poll, chatDelay({idle, interval, failures}));
-        render(); report();
+        timer = setTimeout(poll, chatDelay({hidden: document.hidden, idle, interval, failures}));
+        render(); report(); tab();
         if (sendingAllowed()) for (const entry of [...pending]) {
             if (entry.session !== state.session || !entry.automatic || entry.sending || entry.acknowledged) continue;
             await send(entry.text, entry, entry.draft, true);
@@ -1245,7 +1310,28 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
         for (const item of log.children) item.tick?.();
         report();
     }, 250);
-    const visible = () => { if (!document.hidden) sync(); };
+    // The title of a hidden tab carries one fixed prefix: no flashing, no counts. It is the page's own title again when the user returns.
+    let titleBase = null, titleShown = null, seen = null;
+    const finished = () => new Set(Object.values(state.jobs).filter(job => !WORKING.includes(job.status)).map(job => job.id));
+    const asking = () => [...state.items.values()].some(entry => entry.type === 'confirm'
+        && (entry.whitebox ? whiteboxState(entry) : answers.get(cardKey(state.session, entry.id)) || state.confirms[entry.id] || entry.state || 'asked') === 'asked');
+    function tab() {
+        if (titleShown !== null && document.title !== titleShown) titleBase = titleShown = null;
+        if (stopped || !document.hidden || !known) {
+            if (titleShown !== null && document.title === titleShown) document.title = titleBase;
+            titleBase = titleShown = null; seen = null; return;
+        }
+        seen ||= finished();
+        const notice = tabNotice(state.jobs, asking(), seen);
+        if (!notice) {
+            if (titleShown !== null) document.title = titleBase;
+            titleBase = titleShown = null; return;
+        }
+        if (titleBase === null) titleBase = document.title;
+        // The browser trims and collapses spaces in a title; what it shows is what the next look compares with.
+        document.title = t(...TAB_PREFIX[notice]) + titleBase; titleShown = document.title;
+    }
+    const visible = () => { if (document.hidden) { seen = finished(); tab(); } else { tab(); if (reading()) void poll(); } };
     document.addEventListener('visibilitychange', visible);
     function sync() {
         if (pinned) scroller.scrollTop = scroller.scrollHeight;
@@ -1265,7 +1351,7 @@ export function agentChat(t, api, {open, edit, shown = () => true, changed = () 
             try { await cancelJobs(ids); }
             finally { bulkStopping = false; if (!stopped) { report(); void poll(); } }
         },
-        stop() { closeMenu(); stopped = true; dismissImage?.(); closed.abort(); clearInterval(moving); clearTimeout(timer); timer = null;
+        stop() { closeMenu(); stopped = true; tab(); dismissImage?.(); closed.abort(); clearInterval(moving); clearTimeout(timer); timer = null;
             document.removeEventListener('visibilitychange', visible); document.removeEventListener('pointerdown', outside, true);
             document.removeEventListener('keydown', keys, true); window.removeEventListener('resize', resize); list.removeEventListener('scroll', listScroll);
             log.querySelectorAll('video').forEach(video => video.pause()); }};

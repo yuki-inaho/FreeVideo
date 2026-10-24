@@ -159,6 +159,7 @@ export async function openShare(record,t){
                 const response=await api.fetchApi('/freevideo/share/video',{method:'POST',headers:{'Content-Type':'application/json'},signal:exportRequest.signal,
                     body:JSON.stringify({id,template,rect:shape.rect})});
                 if(response.status===409)throw Object.assign(new Error(t('Another export is running. Try again shortly.','已有分享视频正在导出，请稍后再试。')),{reportable:false});
+                if(response.status===507)throw Object.assign(new Error(t('Exporting the share video failed: the disk is full. Free some space, then export again.','导出分享视频时出错：磁盘空间不够，空出空间后再导出。')),{reportable:false});
                 if(!response.ok)throw new Error(t('Export could not complete. Try again.','分享视频导出未完成，请重试。'));
                 exported=await response.json();
             }

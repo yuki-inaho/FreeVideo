@@ -369,7 +369,7 @@ def judge(shot_view, sheets, *, ask):
         return Decision('keep', shot['id'], '保留已选定的版本。')
     if shot.get('state') in ('waiting', 'shooting'):
         return Decision('wait', shot['id'], '等待这一镜的各版完成。')
-    uncertain = Decision('ask_user', shot['id'], '拿不准，请你挑一版。')
+    uncertain = Decision('ask_user', shot['id'], '拿不准，请挑一版。')
     takes = _selectable(shot)
     if not takes:
         return uncertain

@@ -1,8 +1,7 @@
 import {createLanAccess} from './lan_access.js';
 import { createErrorPanel, errorText, createErrorReport } from './error_panel.js';
-import {topDialog} from './dialog_keys.js';
 import {createExpandButton} from './editor_expand.js';
-import {cleanOptionalPrompt} from './optional_inputs.js';
+import {cleanOptionalPrompt, clonePrompt} from './optional_inputs.js';
 import { app } from '../../scripts/app.js';
 import { api } from '../../scripts/api.js';
 import { openSetup } from './setup.js';
@@ -10,10 +9,10 @@ import { feedbackButton, feedbackIssueURL } from './feedback.js';
 import { wordmark } from './wordmark.js';
 import { createGenerationProgress, referenceTrimText, thermalText, sharedGpuText, encoderFileText, encoderFilePath } from './generation_progress.js';
 import { viewSwitch, viewChanged, agentTabReady, openAutopilot } from './view_navigation.js';
-import { agentInterfaceEnabled } from './agent_connect.js';
+import { agentInterfaceState } from './agent_connect.js';
 import { createUpdateNotice, createVersionInfo, productVersion } from './updates.js';
 import { createPortNotice } from './port_notice.js';
-import { reportIssue, reportTipClosed, showReportTip } from './report_issue.js';
+import { focusReportTip, hideReportTip, reportIssue, reportTipClosed, showReportTip } from './report_issue.js';
 import { issueButton } from './issue_button.js';
 import { createPreviewScene } from './preview_scene.js?v=20260929-swell';
 import { animateDetails, closeDialog } from './motion.js';
@@ -22,7 +21,7 @@ import { createRecentVideos } from './studio_recent.js';
 import { createAgentActivity } from './agent_activity.js';
 import { createStudioQueue, randomSeed, turnNodeOn } from './studio_queue.js';
 import { isNetworkTypeError, connectionLostText } from './browser_extension.js';
-import { attachReferencePicker, referenceItems, syncReferencePrompt, referenceInputs, mentionAt, handleNames, mediaRows } from './prompt_references.js';
+import { attachReferencePicker, referenceItems, enhancementMedia, syncReferencePrompt, referenceInputs, mentionAt, handleNames, mediaRows } from './prompt_references.js';
 import { attachTermSuggest } from './prompt_terms.js';
 import { castInRows, expandCast, mentionHandle, mentionState, mentionedIds, withCharacter, MAX_PICTURES_EACH } from './cast_mention.js';
 import { attachMentionOverlay } from './cast_overlay.js';
@@ -34,7 +33,7 @@ import { continuationUpscale, createSamplingEffort, effortFor, effortsFrom, pass
 import { resultActions, previewBadge, icon, actionsUnavailable } from './result_actions.js';
 import { createPromptEnhancer } from './prompt_enhance.js';
 import { createRequestAssets, enabledLoras, referenceFiles } from './request_assets.js';
-import { rememberPromptDraft, trackPromptDraft } from './prompt_draft.js';
+import { promptDraftTrouble, rememberPromptDraft, restorePromptDraft, savePromptDraft, trackPromptDraft, watchPromptDraftTrouble } from './prompt_draft.js';
 import { canvasDimensions, imageSizeSelection } from './studio_size.js';
 import { createCapabilityView } from './capability_view.js';
 import { openEditorView } from './editor_loader.js';
@@ -44,7 +43,9 @@ import { SHOWCASE_SCENE } from './entry_showcase.js';
 import { createStudioLength, savedSeconds } from './studio_length.js?v=20261011-length';
 import { firstFrameRow } from './first_frame_row.js';
 import { createStudioChain, chainPosition, chainParts, chainSplit, composePartText, readChainResult, sumPartEstimates, singleRunSnapshot } from './studio_chain.js?v=20261019-words';
-import { createExtendState, extendText, extendSourceExists, readExtendRecord, extendSnapshot, mountExtendThumbnail, videoUnavailableText } from './studio_extend.js';
+import { waitingText } from './chain_support.js';
+import { createExtendState, extendText, extendSourceProblem, extendSourceState, readExtendRecord, extendSnapshot, mountExtendThumbnail, videoUnavailableText } from './studio_extend.js';
+import { topDialog, isolateDialogKeys, listenDialogKey, routeDialogKey } from './dialog_keys.js';
 
 const languageOverride = typeof location !== 'undefined'
     ? new URLSearchParams(location.search).get('freevideo_lang') : null;
@@ -155,7 +156,7 @@ function createChainPartList(t, save, {onShow = () => {}, onHide = () => {}, red
         editor.maxLength = 20000; editor.value = row.draft = row.part.text;
         editor.setAttribute('aria-label', t(`Part ${row.part.index + 1} description`, `第 ${row.part.index + 1} 段描述`));
         editor.addEventListener('input', () => { row.draft = editor.value; });
-        editor.addEventListener('keydown', event => {
+        listenDialogKey(editor, 'keydown', event => {
             // Escape leaves the edit, never the studio.
             if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(row, false); row.text.focus(); }
         });
@@ -613,7 +614,9 @@ export function showNodes(node, dialog = null) {
 
 const studioQueues = new WeakMap();
 export async function extendVideo(record, node = current?.node || app.graph?._nodes?.find(row => row.type === 'FreeVideoGenerate')) {
-    if (!node || !await extendSourceExists(api, record)) throw new Error(extendText(t, 'unavailable'));
+    if (!node) throw new Error(extendText(t, 'unavailable'));
+    const state = await extendSourceState(api, record);
+    if (state !== 'ok') throw new Error(extendSourceProblem(t, state));
     return openStudio(node, {extendFrom: await readExtendRecord(api, record)});
 }
 
@@ -654,7 +657,7 @@ export function openStudio(node, {extendFrom = null} = {}) {
     const versionInfo = createVersionInfo(cn); tools.append(versionInfo.element); cleanup.push(versionInfo.dispose);
     tools.append(feedbackButton(t), button(t('Settings', '设置'), openSetup, 'fv-quiet'));
     // The Agent's page is the fourth tab, shown where the Agent interface is on; the guide's last step circles it.
-    agentTabReady(agentInterfaceEnabled(api));
+    agentTabReady(agentInterfaceState(api), () => agentInterfaceState(api));
     const navigation = viewSwitch('studio', () => {}, () => showNodes(node, dialog),
         () => openEditorView(node, {studio: dialog}), () => openAutopilot(node, {studio: dialog}));
     // The guide starts after the tab settles: it fixes its steps from the anchors present at that moment.
@@ -724,7 +727,28 @@ export function openStudio(node, {extendFrom = null} = {}) {
     mention.setAttribute('aria-label', t('Reference media (@)', '引用素材（@）'));
     mention.title = mention.getAttribute('aria-label');
     mention.disabled = prompt.disabled; mention.onpointerdown = e => e.preventDefault();
-    const promptTools = el('div', null, 'fv-prompt-tools'); promptTools.append(mention); promptEditor.append(promptTools);
+    // The prompt file could not be written, or the last prompt could not be read at launch.
+    const draftNote = button('', async () => {
+        draftNote.disabled = true;
+        draftNote.textContent = promptDraftTrouble().save ? t('Saving…', '正在保存…') : t('Loading…', '正在读取…');
+        try {
+            if (promptDraftTrouble().save) await savePromptDraft(api);
+            else {
+                // Read again into the open project; edits not yet saved still win over the file.
+                const current = app.graph.serialize(), target = app.extensionManager?.workflow?.activeWorkflow;
+                const restored = await restorePromptDraft(api, structuredClone(current), target?.path || '__existing__');
+                if (JSON.stringify(restored) !== JSON.stringify(current)) await app.loadGraphData(restored, true, true, target || 'FreeVideo');
+            }
+        } catch { /* The note stays with its retry. */ }
+        draftNote.disabled = false; showDraftTrouble(promptDraftTrouble());
+    }, 'fv-prompt-draft-note');
+    const showDraftTrouble = ({save, restore}) => {
+        if (draftNote.disabled) return;
+        draftNote.hidden = !save && !restore;
+        draftNote.textContent = save ? t('Prompt not saved · retry', '描述没能保存 · 重试') : t('Last prompt not loaded · retry', '上次的描述没能读取 · 重试');
+    };
+    showDraftTrouble(promptDraftTrouble()); cleanup.push(watchPromptDraftTrouble(showDraftTrouble));
+    const promptTools = el('div', null, 'fv-prompt-tools'); promptTools.append(draftNote, mention); promptEditor.append(promptTools);
     cleanup.push(() => references.dispose());
     const terms = attachTermSuggest(prompt, {t, host: dialog, suppressed: () => !!mentionAt(prompt.value, prompt.selectionStart, prompt.selectionEnd, handleNames(castChoices()))});
     cleanup.push(() => terms.dispose());
@@ -749,9 +773,8 @@ export function openStudio(node, {extendFrom = null} = {}) {
         onReport: row => { node.freevideoPromptReportId = row.rewrite_report_id || row.report_id; },
         onChange: () => { rememberPromptDraft(api, node); requestAssets?.refresh(); },
         setText: text => { set(node, 'text', text || (untouched() ? starter : '')); placeholder(); }, context: () => {
-        const items = referenceItems(node);
-        if (linked(node, 'conditioning') || items.some(row => !row.file || row.kind !== 'image')) throw new Error('unsupported_media');
-        return {seconds: Number(value(node, 'seconds')), media: items.map(row => ({file: row.file, role: row.role || 'reference'}))};
+        const media = enhancementMedia(referenceItems(node), linked(node, 'conditioning'));
+        return {seconds: Number(value(node, 'seconds')), media};
     }});
     cleanup.push(() => enhancer.dispose());
     requestAssets = createRequestAssets({t, api, request: () => requestAssetsQuery?.()});
@@ -822,7 +845,7 @@ export function openStudio(node, {extendFrom = null} = {}) {
         '先出半分辨率预览，满意后在结果里点“继续二采”，成片与直接生成一致。');
     const previewPassHint = passOptions[2].title;
     passMode.append(...passOptions);
-    passMode.addEventListener('keydown', event => {
+    cleanup.push(listenDialogKey(passMode, 'keydown', event => {
         const step = {ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1}[event.key];
         if (!step) return;
         event.preventDefault();
@@ -830,7 +853,7 @@ export function openStudio(node, {extendFrom = null} = {}) {
         const current = enabled.findIndex(option => option.getAttribute('aria-checked') === 'true');
         const next = enabled[(current + step + enabled.length) % enabled.length];
         if (next) { next.click(); next.focus(); }
-    });
+    }));
     twoPassLabel.append(el('span', t('Two-pass', '二次采样')), twoPassStatus, passMode);
     let effortEstimate = {}, effortEstimateKey = '', effortEstimateTimer = null, effortEstimateRequest = null, lengthControl = null, chainController = null;
     // A level's step cache; custom steps and workflows without the input sample every step.
@@ -902,7 +925,7 @@ export function openStudio(node, {extendFrom = null} = {}) {
     let releaseExtendThumbnail = () => {};
     cleanup.push(() => releaseExtendThumbnail());
     if (mediaNode?.freevideoCreateMediaEditor) { cleanup.push(mediaNode.freevideoCreateMediaEditor(mediaMount)); mediaDetails.open = mediaFilled(); }
-    else mediaMount.append(el('p', t('Connect a FreeVideo Media panel in node view to upload here.', '在节点视图连接 FreeVideo 素材面板，即可在这里上传。'), 'fv-legacy'));
+    else mediaMount.append(el('p', t('Connect a FreeVideo Media panel in node view to upload here.', '在节点视图连接 FreeVideo 素材面板，可在这里上传。'), 'fv-legacy'));
     paintMediaHint(); mediaDetails.addEventListener('toggle', paintMediaHint);
     controls.addEventListener('change', paintMediaHint, true); controls.addEventListener('input', paintMediaHint, true);
     const connectedLora = upstream(node, 'loras');
@@ -1030,6 +1053,7 @@ export function openStudio(node, {extendFrom = null} = {}) {
         return level?.name === 'Medium' ? t('A continuation uses the Medium level.', '接着生成使用标准档。') : t('A continuation uses the Light level.', '接着生成使用轻量档。');
     }
     function showEffortEstimate(steps = Number(baseSteps.value), twoPassPlan = twoPass.checked, cache = stepCacheNow(), factor = upscaleNow()) {
+        effort.setWarning('');
         const parts = lengthControl.plan?.count > 1 ? t(`${lengthControl.plan.count} parts`, `分 ${lengthControl.plan.count} 段`) : '';
         // A request that fits one run keeps its own estimate while the longest run is unknown.
         if ((lengthControl.capabilityState === 'pending' || lengthControl.capabilityState === 'unavailable')
@@ -1049,7 +1073,11 @@ export function openStudio(node, {extendFrom = null} = {}) {
             return;
         }
         const rangeEstimate = capabilityView?.estimate(steps, twoPassPlan, arguments.length ? 3 : Number(refineSteps.value), cache, factor);
-        if (rangeEstimate) { effort.setEstimate(rangeEstimate); return; }
+        if (rangeEstimate) {
+            effort.setEstimate(rangeEstimate);
+            effort.setWarning(capabilityView.warning(steps, twoPassPlan, arguments.length ? 3 : Number(refineSteps.value), cache, factor));
+            return;
+        }
         const mode = twoPassPlan ? 'two_pass' : 'single';
         // Keys: "<steps>[:<cache>][x<factor> when two-pass and not 2]".
         const estimate = effortEstimate[mode]?.[`${steps}${cache ? ':' + cache : ''}${twoPassPlan && factor !== 2 ? 'x' + factor : ''}`];
@@ -1183,7 +1211,7 @@ export function openStudio(node, {extendFrom = null} = {}) {
         showReportTip(bar, anchor, t, {mode, animate, onHide: () => { reportTipFor = null; },
             submit: () => reportIssue(progress.fetchReport, productVersion(), {save: mode === 'invite'})});
     }
-    async function downloadReport() { await progress.downloadReport(); reportCard('downloaded'); }
+    async function downloadReport() { if (focusReportTip(links.querySelector('.fv-actions'))) return; await progress.downloadReport(); reportCard('downloaded'); }
     function placeReportTip(delay) {
         clearTimeout(reportTipTimer);
         reportTipTimer = setTimeout(() => {
@@ -1240,9 +1268,15 @@ export function openStudio(node, {extendFrom = null} = {}) {
     }
     const status = el('div', '', 'fv-status'); status.setAttribute('role', 'status');
     // A fault in the status line carries the report button; the next text written to the line removes it.
-    const statusIssue = issueButton(t, () => ({where: ['Generate', '生成'], message: status.firstChild?.textContent}), {className: 'fv-status-issue'});
+    // The run's diagnostic report: errors beside it go the report route instead of the feedback form.
+    const reportRoute = {has: () => progress.hasReport(), download: () => progress.downloadReport(), fetch: progress.fetchReport, version: productVersion};
+    const statusIssue = issueButton(t, () => ({where: ['Generate', '生成'], message: status.firstChild?.textContent}), {className: 'fv-status-issue', route: reportRoute});
     function fault(text) { status.dataset.error = 'true'; status.textContent = text; status.append(statusIssue); }
     const stats = el('div', null, 'fv-stats'), budget = el('div', '', 'fv-budget'), links = el('div', null, 'fv-result-links');
+    // New text in the status line replaces the report card under the result.
+    const statusWatch = new MutationObserver(() => { if (!status.textContent.trim()) return; hideReportTip(links.querySelector('.fv-actions')); hideReportTip(status); });
+    statusWatch.observe(status, {childList: true, characterData: true, subtree: true});
+    cleanup.push(() => statusWatch.disconnect());
     stats.hidden = true;
     const metrics = [], metricLabels = [];
     for (const label of [t('Generation', '生成用时'), t('Total time', '总用时'), t('Peak VRAM', '最高显存'), t('Peak RAM', '最高内存')]) { const box = el('div', null, 'fv-stat'), n = el('strong', '—'), caption = el('span', label); box.append(n, caption); stats.append(box); metrics.push(n); metricLabels.push(caption); }
@@ -1275,7 +1309,7 @@ export function openStudio(node, {extendFrom = null} = {}) {
     const sharedGpuNote = el('div', '', 'fv-note'); sharedGpuNote.hidden = true;
     const encoderNote = el('div', '', 'fv-note'); encoderNote.hidden = true;
     output.append(status, reuseRow, trimNote, memoryNote, thermalNote, sharedGpuNote, encoderNote, links, stats, budget, progress.stall, progress.report, prewarm);
-    const failure = createErrorPanel(t); output.append(failure.element);
+    const failure = createErrorPanel(t, reportRoute); output.append(failure.element);
     // With the picture, the result's actions and numbers form one block, centred below the header.
     output.append(el('div', null, 'fv-preview-end'));
     if (node.freevideoFailure) failure.show(node.freevideoFailureReport || node.freevideoFailure, false);
@@ -1384,9 +1418,10 @@ export function openStudio(node, {extendFrom = null} = {}) {
             const position = chainPosition(chain, message);
             const joining = readChainResult(chain).joining, waiting = chain.state === 'queued' && message.phase === 'prepare';
             setChainLine(joining ? t('Joining the parts.', '正在接合各段。')
-                : waiting ? t(`Waiting in queue · Part ${position.index + 1} of ${position.count}`, `正在排队 · 第 ${position.index + 1} 段，共 ${position.count} 段`)
+                : waiting ? (chain.waiting ? waitingText(chain.waiting, t) : t(`Waiting in queue · Part ${position.index + 1} of ${position.count}`, `正在排队 · 第 ${position.index + 1} 段，共 ${position.count} 段`))
                 : t(`Part ${position.index + 1} of ${position.count}`, `第 ${position.index + 1} 段，共 ${position.count} 段`));
             progress.element.querySelector('.fv-generation-label').hidden = joining || waiting;
+            progress.element.classList.toggle('fv-generation-waiting', waiting);
             progress.updateReport(message); showProgress(message);
         },
         onState: chain => {
@@ -1405,7 +1440,7 @@ export function openStudio(node, {extendFrom = null} = {}) {
                 : t(`Part ${position.index + 1} of ${position.count}`, `第 ${position.index + 1} 段，共 ${position.count} 段`));
             if (active && node.properties.freevideo_chain?.width) previewSize(node.properties.freevideo_chain.width, node.properties.freevideo_chain.height);
             if (!active) { cancelling = false; hideProgress(); }
-            if (!active) progress.element.querySelector('.fv-generation-label').hidden = false;
+            if (!active) { progress.element.querySelector('.fv-generation-label').hidden = false; progress.element.classList.remove('fv-generation-waiting'); }
             if (chain?.state === 'cancelled') status.textContent = t('Cancelled', '已取消');
             // After a stop with videos queued the next one starts at once; its line says so until something else is done.
             if (stopNote) { status.dataset.error = 'false'; status.textContent = stopNote; }
@@ -1413,9 +1448,9 @@ export function openStudio(node, {extendFrom = null} = {}) {
             updateRunButton();
         },
         onResult: (result, outcome) => { node.freevideoLastResult = result; showResult(result, {chosen: outcome.partial});
-            if (outcome.partial && !outcome.joined) status.textContent = t('Showing the last completed part.', '正在显示最后完成的一段。'); },
-        onError: error => showQueueError(new Error(error.joining ? t(`Could not join the parts: ${error.message}`, `未能接合各段：${error.message}`)
-            : t(`Part ${error.index + 1} failed: ${error.message}`, `第 ${error.index + 1} 段失败：${error.message}`)))});
+            // A part that failed keeps its sentence; the part list already marks which ones finished.
+            if (outcome.partial && !outcome.joined && status.dataset.error !== 'true') status.textContent = t('Showing the last completed part.', '正在显示最后完成的一段。'); },
+        onError: showPartError});
     cleanup.push(() => chainController.dispose());
     node.freevideoStudioChain = chainController;
     node.freevideoEditorLooping = () => queueController.state().looping;
@@ -1522,6 +1557,18 @@ export function openStudio(node, {extendFrom = null} = {}) {
         lastQueueError = null; failure.clear(); node.freevideoFailure = ''; node.freevideoFailureReport = null;
         status.dataset.error = 'false'; status.textContent = '';
     }
+    // A part that stopped is one sentence on the status line; what ComfyUI said goes in the card, as a generation failure.
+    function showPartError(error) {
+        if (disposed) return;
+        status.dataset.error = 'true';
+        status.textContent = error.joining ? t('Could not join the parts. See the details below.', '未能接合各段，原因见下方。')
+            : t(`Part ${error.index + 1} could not be generated. See the details below.`, `第 ${error.index + 1} 段未能生成，原因见下方。`);
+        if (lastQueueError === error.message) return;
+        lastQueueError = error.message;
+        const report = failure.show(error.message, false,
+            {stage: 'execution', node, graph: app.graph, ...(error.joining ? {progress: {phase: 'save'}} : {})});
+        node.freevideoFailureReport = report; node.freevideoFailure = errorText(report);
+    }
     function updateRunButton() {
         const submitting = capturing || queueState?.submitting;
         updateFirstFrame();
@@ -1536,7 +1583,7 @@ export function openStudio(node, {extendFrom = null} = {}) {
         const chainWait = Boolean(chainController?.active && (!chainController.canQueue || !multiple));
         const chainReason = !chainWait ? '' : readChainResult(chain)?.joining
             ? t('Joining parts…', '正在拼接…')
-            : chain?.state === 'queued' ? t('Queued…', '排队中…')
+            : chain?.state === 'queued' ? (chain.waiting ? waitingText(chain.waiting, t) : t('Queued…', '排队中…'))
             : t(`Generating part ${position.index + 1}…`, `正在生成第 ${position.index + 1} 段…`);
         generate.disabled = submitting || chainWait || lengthControl.blocked || (runMode === 'loop' && queueState?.looping);
         generate.textContent = submitting ? t('Adding…', '正在添加…')
@@ -1691,13 +1738,14 @@ export function openStudio(node, {extendFrom = null} = {}) {
             if (lengthPlan?.count > 1 && chosenMode !== 'single') { status.textContent = t('Videos made in parts cannot use batch or loop.', '分段视频不能批量或循环生成。'); return; }
             const lengthOptions = lengthControl.options();
             const source = extension.source;
-            if (source && !await extendSourceExists(api, source)) throw new Error(extendText(t, 'unavailable'));
+            const sourceState = source ? await extendSourceState(api, source) : 'ok';
+            if (sourceState !== 'ok') throw new Error(extendSourceProblem(t, sourceState));
             if (source && lengthPlan?.count > 1) lengthOptions.after = {work: source.video};
             // Only serialization briefly locks the editor. Network submission
             // and all GPU execution leave the next draft fully editable.
             for (const section of controls.querySelectorAll('.fv-section')) section.inert = true;
             held = turnNodeOn(node);
-            const snapshot = singleRunSnapshot(extendSnapshot(cleanOptionalPrompt(structuredClone(await app.graphToPrompt())), node.id, source,
+            const snapshot = singleRunSnapshot(extendSnapshot(cleanOptionalPrompt(clonePrompt(await app.graphToPrompt())), node.id, source,
                 {multiple: lengthPlan?.count > 1}), node.id, lengthPlan);
             if (!snapshot) { fault(t('Could not prepare this run. Try again.', '没能准备这次生成，请重试。')); return; }
             const seedIndex = node.widgets.findIndex(w => w.name === 'seed');
@@ -1850,7 +1898,10 @@ export function openStudio(node, {extendFrom = null} = {}) {
             return;
         }
         generate.click();
-    } }; dialog.addEventListener('keydown', escape);
+    } };
+    cleanup.push(listenDialogKey(dialog, 'keydown', escape));
+    cleanup.push(isolateDialogKeys(dialog, event => routeDialogKey(event, dialog)));
+
     dialog.addEventListener('cancel', e => { e.preventDefault(); closeDialog(dialog); });
     dialog.onclose = () => { disposed = true; for (const f of cleanup) f(); stage.querySelector('video')?.pause(); dialog.remove(); if (current?.dialog === dialog) { current = null; viewChanged('nodes', node); } };
     capabilityView = createCapabilityView({node, api, t, getState: () => ({ratio,

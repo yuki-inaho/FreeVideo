@@ -257,7 +257,7 @@ def build(app):
     choices.columnconfigure((0, 1), weight=1, uniform='choices')
     app.mode_buttons = []
     for index, (value, title, detail) in enumerate((
-        ('existing', ('I have ComfyUI', '我已安装 ComfyUI'), ('Connect your installation.', '接入现有安装。')),
+        ('existing', ('Use existing ComfyUI', '使用已有 ComfyUI'), ('Connect your installation.', '接入现有安装。')),
         ('new', ('Install ComfyUI for me', '帮我安装 ComfyUI'), ('ComfyUI, Python and FreeVideo together.', '一并准备 ComfyUI、Python 和 FreeVideo。')))):
         choice = Choice(choices, app, value, title, detail)
         choice.grid(row=0, column=index, sticky='nsew', padx=(0, b.space(2)) if index == 0 else (b.space(2), 0))

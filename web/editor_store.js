@@ -391,8 +391,9 @@ export function createEditorStore(api, {t = en => en, notify = () => {}, onGener
                 xhr.upload.onprogress = event => { if (event.lengthComputable) progress(event.loaded / event.total); };
                 xhr.onload = () => {
                     release();
-                    if (xhr.status === 404) { notice('import', 'Import is unavailable until you restart after updating.', '更新后重启即可导入素材。'); resolve(null); return; }
-                    if (xhr.status < 200 || xhr.status >= 300) { reject(errorFor(xhr)); return; }
+                    if (xhr.status === 404) { notice('import', 'Import is unavailable until you restart after updating.', '更新后重启可导入素材。'); resolve(null); return; }
+                    // The server's reason (a full disk) comes along, as with a failed save.
+                    if (xhr.status < 200 || xhr.status >= 300) { let body = null; try { body = JSON.parse(xhr.responseText); } catch {} reject(Object.assign(errorFor(xhr), {reason: body?.reason})); return; }
                     try { resolve(JSON.parse(xhr.responseText).import); } catch (error) { reject(error); }
                 };
                 xhr.onerror = () => { release(); reject(new Error('import_failed')); };

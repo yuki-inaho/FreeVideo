@@ -50,6 +50,9 @@ def enum(values, **kw):
 
 JOB = string(13, pattern=r'^j[0-9a-f]{12}$')
 SESSION = string(13, pattern=r'^s[0-9a-f]{12}$')
+# What an agent may say it is doing before it answers. The page owns the words for each key.
+STAGES = ('reading', 'scripting', 'storyboarding', 'prompting', 'checking', 'assembling')
+STAGE = enum(STAGES, description='The stage of your answer. The page shows its own wording for it.')
 PRODUCTION = string(13, pattern=r'^d[0-9a-f]{12}$')
 CAST = string(13, pattern=r'^c[0-9a-f]{12}$')
 PROJECT = string(34, pattern=r'^e-[0-9a-f]{32}$')
@@ -439,10 +442,11 @@ def contracts(*, local=False):
             ('/chat/video', 'GET', None), ('/chat/list', 'GET', None), ('/chat/new', 'POST', EMPTY),
             ('/chat/delete', 'POST', obj({'session': SESSION, 'stop': {'type': 'boolean'}}, ('session',))),
             ('/chat', 'POST', obj({'text': string(8000), 'id': CHAT_ID, 'session': SESSION, 'whitebox': {'type': 'boolean'}}, ('text', 'id'))),
+            ('/chat/abandon', 'POST', obj({'session': SESSION})),
             ('/chat/confirm', 'POST', obj({'id': string(12, pattern=r'^cf[0-9a-f]{10}$'), 'approve': {'type': 'boolean'},
                                            'session': SESSION}, ('id', 'approve')))):
         routes[(method, '/freevideo/agent' + suffix)] = route('Studio Agent controls', body=body, auth=False, local=True,
-            lan=suffix in ('/chat', '/chat/now', '/chat/confirm', '/chat/list', '/chat/new', '/chat/video',
+            lan=suffix in ('/chat', '/chat/now', '/chat/confirm', '/chat/abandon', '/chat/list', '/chat/new', '/chat/video',
                            '/activity', '/activity/cancel'))
     # These existing ComfyUI handlers are registered outside the Agent dispatcher.
     # /chain is a creation POST; monitoring reads /chains and /chain/{id}.
@@ -500,9 +504,9 @@ DRAMA_OPERATIONS = {
 # The fields are checked when planning; the shape is told here so an agent does not guess it.
 SCREENPLAY = {'type': 'object', 'description': (
     'characters: {key: {card: cast card ID, or name, look, voice, language}}; '
-    'shots: [{id, seconds, action or prompt, camera, framing, sound, takes, seed, '
+    'shots: [{id, seconds, action or prompt, camera, framing, sound, music (N/A unless the user asks for music in this shot), takes, seed, '
     'cast: [character keys], lines: [{who: character key, line, how}], '
-    'continue: true to carry on from the previous shot}]; also title, style, aspect, quality, music.')}
+    'continue: true to carry on from the previous shot}]; also title, style, aspect, quality; a whole-film score is not written here but imported onto a sound track.')}
 
 
 def drama_schema(name):
@@ -580,7 +584,7 @@ def cast_view():
         description=nullable(string(1000)), revision=number(1, integer=True),
         images=array(picture, 0, 6), candidates=array(picture, 0, 6),
         generating=nullable(generating), generated=nullable(generated),
-        generate_error=nullable(obj(dict(code=string(), job=JOB, message=string(), error_zh=string()), ('code', 'job', 'message')))),
+        generate_error=nullable(obj(dict(code=string(), job=JOB, message=string(), error_zh=string(), error_en=string()), ('code', 'job', 'message')))),
         ('id', 'kind', 'name', 'revision', 'images', 'candidates', 'generating')), additionalProperties=True)
 
 
@@ -800,9 +804,10 @@ SESSION_OPERATIONS = {
     'post': ('POST', '/sessions/{id}/events', 'Append a message or plan for the user. Steps are recorded by the server.'),
     'stop': ('POST', '/sessions/{id}/stop', 'Only the page user may stop a work conversation.'),
     'resume': ('POST', '/sessions/{id}/resume', 'Only the page user may continue a work conversation.'),
+    'stage': ('POST', '/sessions/{id}/stage', 'Say which stage of the answer you are working on; the page shows its own words for it. Clears when you speak or start a task.'),
 }
 SESSION_TOOLS = dict(create='freevideo_session_create', list='freevideo_sessions',
-                     events='freevideo_session_events', post='freevideo_session_post')
+                     events='freevideo_session_events', post='freevideo_session_post', stage='freevideo_report_stage')
 
 
 CONFIRM_DEFAULTS = dict(start=True, reshoot_seconds=300)
@@ -846,13 +851,14 @@ def session_event(*, stored=False, agent_only=False):
             why=text, error=enum(ERRORS)), ('type', 'tool', 'summary', 'state', *(['id'] if stored else []))),
             obj(dict(type={'const': 'confirm'}, id=string(12, pattern=r'^cf[0-9a-f]{10}$'),
                 question=text, estimate_seconds=number(0), state=enum(('asked', 'approved', 'declined')),
+                width=number(0, integer=True), height=number(0, integer=True), seconds=number(0),
                 action=enum(('start', 'reshoot')), refs=obj(dict(drama=PRODUCTION, shot=SLUG)),
                 whitebox=obj(dict(work=SAVED, seconds=number(0), summary=text), ('work',),
                              description='The rendered white-model preview the user is asked to approve.'),
                 digest=string(64, pattern=r'^[0-9a-f]{64}$')),
                 ('type', 'id', 'state'), **{'if': {'properties': {'state': {'const': 'asked'}}},
                                         'then': {'required': ['question']}}),
-            obj(dict(type={'const': 'control'}, action=enum(('stopped', 'resumed', 'renamed')),
+            obj(dict(type={'const': 'control'}, action=enum(('stopped', 'resumed', 'renamed', 'abandoned')),
                 title=dict(type='string', maxLength=120)), ('type', 'action'),
                 **{'if': {'properties': {'action': {'const': 'renamed'}}},
                    'then': {'required': ['title']}, 'else': {'not': {'required': ['title']}}})]
@@ -874,6 +880,8 @@ def session_schema(name):
                         limit=number(1, 500, integer=True, default=500)))
     if name == 'post':
         return session_event()
+    if name == 'stage':
+        return obj(dict(stage=STAGE), ('stage',))
     return EMPTY
 
 
@@ -1432,7 +1440,7 @@ def openapi():
                            'description': 'Image diagnostic report ID, or null when no report exists.'},
                 request_id=string(), docs=string(), retry_after_seconds=number(0), card={'type': 'object'}, job=JOB,
                 project={'type': 'object'}, current_revision=number(1, integer=True),
-                error_zh=string()),
+                error_zh=string(), error_en=string()),
                 ('code', 'message', 'details', 'retryable', 'request_id', 'docs'))}))
 
 

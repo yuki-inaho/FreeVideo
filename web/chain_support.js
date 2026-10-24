@@ -4,6 +4,17 @@ import { effortFor, effortsFrom } from './sampling_effort.js';
 const clockDefault = {now: () => Date.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id)};
 export const chainRoute = (id, action) => '/freevideo/chain' + (id ? '/' + encodeURIComponent(id) : '') + (action ? '/' + action : '');
 
+// The line for a chain that waits behind others: its own time when one video is ahead and its time left is known.
+export function waitingText(waiting, t) {
+    const ahead = waiting?.ahead, left = waiting?.remaining_seconds;
+    if (!Number.isInteger(ahead) || ahead < 1) return t('Queued', '排队中');
+    if (ahead > 1) return t(`Queued · ${ahead} ahead`, `排队中 · 前面还有 ${ahead} 个`);
+    if (!Number.isFinite(left) || left < 0) return t('Queued · waiting for the previous one', '排队中 · 等前一个完成');
+    const time = left < 60 ? t(`about ${Math.max(1, Math.ceil(left))} s`, `约 ${Math.max(1, Math.ceil(left))} 秒`)
+        : t(`about ${Math.ceil(left / 60)} min`, `约 ${Math.ceil(left / 60)} 分钟`);
+    return t(`Queued · starts in ${time}`, `排队中 · ${time}后开始`);
+}
+
 // No overlapping polls and no delivery after disposal, including a slow response.
 export function createPoller(read, deliver, {clock = clockDefault, interval = 2000, onError = () => {}} = {}) {
     let active = true, timer = null, running = null;

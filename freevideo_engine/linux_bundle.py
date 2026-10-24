@@ -61,6 +61,21 @@ def child_environment(environ=None):
             env.pop(name)
         elif name in QT_VARIABLES and inside_bundle(env[name]):
             env.pop(name)
+    # Setup also runs through bash and a managed, non-frozen Python. Carry the
+    # selected fallback on PATH so those workers use system.curl_executable()
+    # just like the GUI. Append it: existing system tools keep priority.
+    from .system import curl_executable, curl_ca_arguments
+    bundled = bundle_directory() / 'curl/curl'
+    curl = curl_executable(env) if bundled.is_file() else None
+    if curl is not None and Path(curl) == bundled:
+        folder = str(Path(curl).parent)
+        path = env.get('PATH', os.defpath)
+        if folder not in path.split(os.pathsep):
+            env['PATH'] = path + os.pathsep + folder if path else folder
+        certificates = curl_ca_arguments(curl, env)
+        if certificates:
+            # curl reads no variable for proxy roots; curl_command and setup pass this one on.
+            env['CURL_CA_BUNDLE'] = env['FREEVIDEO_CURL_PROXY_CA'] = certificates[1]
     return env
 
 

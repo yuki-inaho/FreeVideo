@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tarfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,14 @@ from scripts.deduplicate_bundle_data import deduplicate_bundle_data, write_data_
 APP_ID = 'org.flashml.FreeVideo'
 NAME = RELEASE_ASSETS[LINUX_CHANNEL][0]
 TOOLS = {
+    # stunnel/static-curl 8.22.0, x86_64 musl: fully static, HTTPS + HTTP/SOCKS
+    # proxies, with embedded Mozilla roots. The dev archive supplies the original
+    # licenses for curl AND its linked components; headers/libraries are not shipped.
+    'curl': dict(version='8.22.0',
+                 url='https://github.com/stunnel/static-curl/releases/download/8.22.0/curl-linux-x86_64-dev-8.22.0.tar.xz',
+                 sha256='93a928c9bab36604ff646e7de31c9d4b789145acf8c7cda75e7da2e1221c5cc7',
+                 binary_sha256='b7443db66d622a27ef2152bb2032d6ada9fb29a8917f22b9521a993f8e61cd7f',
+                 ca_sha256='f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9'),
     'appimagetool': dict(url='https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage',
                          sha256='ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0'),
     'runtime': dict(url='https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64',
@@ -90,9 +99,41 @@ def tool(cache, name):
         stage.replace(path)
     if hashlib.sha256(path.read_bytes()).hexdigest() != spec['sha256']:
         raise SystemExit('Pinned %s does not match its checksum: %s' % (name, path))
-    if not name.startswith('font'):
+    if name in ('appimagetool', 'runtime'):
         path.chmod(0o755)
     return path
+
+
+def bundle_curl(cache, destination, notices):
+    """Stage only the verified static executable and its original license texts."""
+    spec = TOOLS['curl']
+    destination.mkdir(parents=True, exist_ok=True)
+    licenses = notices / 'curl'
+    licenses.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(tool(cache, 'curl'), 'r:xz') as archive:
+        # Read exact members, never extract archive paths or follow archive links.
+        member = archive.getmember('curl-x86_64/bin/curl')
+        if not member.isfile():
+            raise ValueError('Bundled curl must be a regular file')
+        data = archive.extractfile(member).read()
+        if hashlib.sha256(data).hexdigest() != spec['binary_sha256']:
+            raise ValueError('Bundled curl binary does not match its checksum')
+        executable = destination / 'curl'
+        executable.write_bytes(data)
+        executable.chmod(0o755)
+        copied = []
+        for member in archive.getmembers():
+            path = Path(member.name)
+            if path.parent == Path('curl-x86_64/licenses') and member.isfile():
+                (licenses / (path.name + '.txt')).write_bytes(archive.extractfile(member).read())
+                copied.append(path.name)
+        if not {'curl', 'ca-bundle', 'openssl'} <= set(copied):
+            raise ValueError('Bundled curl licenses are missing')
+    (licenses / 'SOURCE.txt').write_text(
+        'Static curl %s (Linux x86_64 musl)\n%s\nArchive SHA256: %s\nBinary SHA256: %s\n'
+        'Build sources: https://github.com/stunnel/static-curl/tree/%s\n' %
+        (spec['version'], spec['url'], spec['sha256'], spec['binary_sha256'], spec['version']), encoding='utf-8')
+    return executable
 
 
 def launcher_characters(root):
@@ -206,6 +247,7 @@ def main():
     stamp = stamp_source(staged, build)
     notices = staged / 'freevideo_engine/launcher/licenses/bundled'
     collect_notices(ROOT, notices)
+    curl = bundle_curl(tools, out / 'curl', notices)
     fonts = out / 'fonts'
     glyphs = make_fonts(ROOT, tools, fonts)
     shutil.copyfile(fonts / 'OFL.txt', notices / 'Noto-Sans-CJK-SC-OFL.txt')
@@ -227,6 +269,7 @@ def main():
     from scripts.source_build import run_pyinstaller
     # These files are added after PyInstaller; they belong to the same base key.
     extra_runtime = {'appimage-runtime': str(runtime), 'appimagetool': str(appimagetool)}
+    extra_runtime['curl'] = str(curl)
     for name in SYSTEM_LIBRARIES:
         path = system_library(name, args.libraries.resolve() if args.libraries else None)
         if path is not None:
@@ -235,6 +278,9 @@ def main():
     dist = out / 'dist' / 'FreeVideo'
     write_prune_report(out, prune_qt_bundle(dist))
     bundled = bundle_libraries(dist / '_internal', args.libraries.resolve() if args.libraries else None)
+    # Copy after PyInstaller: a static ELF must not be rewritten or analyzed as
+    # a shared library. The base manifest above still binds its exact bytes.
+    shutil.copytree(curl.parent, dist / '_internal/curl')
     folder = appdir(out, dist, ROOT / 'freevideo_engine/assets/icon.png')
     # copytree expands hardlinks: deduplicate the final AppDir, after copying.
     write_data_report(out, deduplicate_bundle_data(folder))

@@ -1,6 +1,7 @@
 // Camera and motion words offered while a prompt is typed. The list is local; nothing is sent anywhere,
 // a word is written only when it is chosen, and the typed language decides which form is inserted.
 import {caretRect} from './caret_rect.js';
+import {listenDialogKey} from './dialog_keys.js';
 export const TERMS = [
     ['dolly in', '推镜头'], ['dolly out', '拉镜头'], ['pan left', '左摇镜头'], ['pan right', '右摇镜头'],
     ['tilt up', '上摇镜头'], ['tilt down', '下摇镜头'], ['tracking shot', '跟拍镜头'], ['orbit shot', '环绕镜头'],
@@ -56,7 +57,10 @@ export function attachTermSuggest(input, {t = en => en, host, suppressed = () =>
     let found = null, active = -1, composing = false, disposed = false, dismissed = null;
     let saved = null;
     const listeners = [];
-    const listen = (target, name, fn, options) => { target.addEventListener(name, fn, options); listeners.push(() => target.removeEventListener(name, fn, options)); };
+    const listen = (target, name, fn, options) => {
+        if (name.startsWith('key')) { listeners.push(listenDialogKey(target, name, fn, options)); return; }
+        target.addEventListener(name, fn, options); listeners.push(() => target.removeEventListener(name, fn, options));
+    };
     function close() {
         if (popup.hidePopover && popup.matches(':popover-open')) popup.hidePopover();
         popup.hidden = true; found = null;

@@ -1,5 +1,6 @@
 // H3 numbers each reference kind separately, in the order of comfy_media.export.
 import {caretRect} from './caret_rect.js';
+import {listenDialogKey} from './dialog_keys.js';
 const titles = {image: 'Picture', video: 'Video', audio: 'Audio'};
 const widget = (node, name) => node?.widgets?.find(w => w.name === name);
 const linkFor = (node, name) => node?.graph?.links?.[node.inputs?.find(i => i.name === name)?.link];
@@ -73,6 +74,17 @@ export function referenceItems(node) {
         token: `<${titles[item.kind]} ${counters[item.kind]}>`}));
 }
 
+// What the prompt model can read: pictures and, as one still frame, videos added in Media. Audio and connected
+// nodes are left out, and keep their labels in the scene; the error names why only when nothing is left.
+export function enhancementMedia(items, conditioningLinked = false) {
+    const media = items.filter(row => row.file && ['image', 'video'].includes(row.kind))
+        .map(row => ({file: row.file, role: row.role || 'reference', kind: row.kind, number: row.number}));
+    if (media.length) return media;
+    const connected = conditioningLinked || items.some(row => !row.file);
+    if (connected || items.length) throw new Error(connected ? 'connected_media' : 'audio_media');
+    return media;
+}
+
 export function remapReferences(text, previous, current, removed = '[Removed reference]') {
     const byKey = new Map(current.map(item => [item.key, item.token]));
     const replacement = new Map(previous.map(item => [item.token, byKey.get(item.key) || removed]));
@@ -135,7 +147,10 @@ export function attachReferencePicker(input, {items, t = en => en, view, host, a
     input.setAttribute('aria-controls', list.id); input.setAttribute('aria-expanded', 'false');
     let matches = [], active = 0, range = null, composing = false, disposed = false;
     const listeners = [];
-    const listen = (target, name, fn, options) => { target.addEventListener(name, fn, options); listeners.push(() => target.removeEventListener(name, fn, options)); };
+    const listen = (target, name, fn, options) => {
+        if (name.startsWith('key')) { listeners.push(listenDialogKey(target, name, fn, options)); return; }
+        target.addEventListener(name, fn, options); listeners.push(() => target.removeEventListener(name, fn, options));
+    };
     function close() {
         if (popup.hidePopover && popup.matches(':popover-open')) popup.hidePopover();
         popup.hidden = true; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant');
@@ -203,7 +218,7 @@ export function attachReferencePicker(input, {items, t = en => en, view, host, a
         if (!matches.length) {
             const empty = document.createElement('div'); empty.className = 'fv-reference-empty';
             empty.textContent = invalid ? t('Check your media selection.', '请检查素材用途是否冲突。')
-                : available.length || everyone.length ? t('No matching characters or media', '没有匹配的角色或素材') : t('Add reference media to use @', '添加参考素材后即可使用 @');
+                : available.length || everyone.length ? t('No matching characters or media', '没有匹配的角色或素材') : t('Add reference media to use @', '添加参考素材后可使用 @');
             list.append(empty);
             if (!available.length && !everyone.length && !invalid && addMedia) {
                 const add = document.createElement('button'); add.type = 'button'; add.textContent = t('Add media', '添加素材');

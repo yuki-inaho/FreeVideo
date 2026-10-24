@@ -13,6 +13,8 @@ export function describeVerdict(verdict, t) {
     else if (verdict.reason === 'int8-unmergeable') reason = t('This LoRA cannot be used', '此 LoRA 无法使用');
     else if (verdict.reason === 'format') reason = t('not a LoRA file FreeVideo can read', '不是 FreeVideo 能读取的 LoRA 文件');
     else if (verdict.reason === 'shape') reason = t('does not match the current model', '和当前模型的结构不匹配');
+    else if (verdict.reason === 'acceleration') reason = t('an acceleration LoRA made for the original model. The FreeVideo model is already accelerated and does not need one',
+        '这是为原版模型制作的加速 LoRA。FreeVideo 的模型已经加速，无需此类 LoRA');
     else reason = family ? t(`made for ${family}`, `这是给 ${family} 训练的 LoRA`) : t('not made for the FreeVideo model', '不适用于 FreeVideo 的模型');
     const summary = verdict.summary || {};
     const lines = [];

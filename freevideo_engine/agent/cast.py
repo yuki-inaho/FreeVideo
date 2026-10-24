@@ -807,7 +807,7 @@ class Cast:
                     code = (row.get('error') or {}).get('code') if row else 'not_found'
                     code = code or (row['status'] if row else 'not_found')
                     detail = errors.image_failure(code, (row.get('error') or {}).get('report_id') if row else None)
-                    failure = failure or dict(code=code, job=job, error_zh=detail['reason']['zh'], message=(
+                    failure = failure or dict(code=code, job=job, error_zh=detail['reason']['zh'], error_en=detail['reason']['en'], message=(
                         'The generation was cancelled.' if row and row['status'] == 'cancelled'
                         else detail['reason']['en']), **detail)
                     continue
@@ -843,7 +843,7 @@ class Cast:
                 if row is None or row['status'] != 'succeeded':
                     code = (row.get('error') or {}).get('code') if row else 'not_found'
                     failure = failure or dict(code=code or row['status'], job=job,
-                        error_zh=errors.failure_reason((row.get('error') or dict(code=code or row['status'])) if row else dict(code=code)), message=(
+                        **errors.reasons((row.get('error') or dict(code=code or row['status'])) if row else dict(code=code)), message=(
                         'The generation was cancelled.' if row and row['status'] == 'cancelled'
                         else 'The reference clip did not finish.'))
                     continue

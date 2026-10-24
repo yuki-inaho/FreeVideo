@@ -262,6 +262,25 @@ class ModelBank:
         return (used is not None and inference_headroom(sample) >= need + 2*GiB and
                 (self.ram_budget is None or used + need <= self.ram_budget))
 
+    def settle(self, pinned=0):
+        """End of a request: keep the engine and encoder only if the next cold encoder still fits.
+
+        The RAM guard counts the whole session, so retained engine weights
+        plus the next encoder's start (about 8 GiB) must stay inside the
+        budget, and so must the host weights a fresh plan would pin: measured,
+        a retained copy left no room to pin and sampling took 95 s instead of
+        38 s. Otherwise the engine goes as it did with one worker per request.
+        """
+        for role in ('engine', 'encoder'):
+            if role in self.entries and not self.ram_fits(8*GiB + int(pinned)):
+                self.drop(role, 'Retained weights leave no host room for the next request')
+        gc.collect()
+        try:
+            import ctypes
+            ctypes.CDLL('libc.so.6').malloc_trim(0)
+        except (OSError, AttributeError):
+            pass
+
     def input_vae_room(self, model, canvas, *, audio=False):
         # Input encoding has its own live workspace; it cannot assume an output
         # decoder's memory footprint. Charge actual retained CPU model tensors
@@ -401,7 +420,7 @@ class ModelBank:
         peak = estimate if observed is None else observed
         # Sampling is the long stage: an idle model stays through it only where
         # the device still holds both beside every other application.
-        self.make_room('engine', peak, model=found, device=True)
+        self.make_room('engine', peak, model=found, device=True, ram_need=8*GiB)
         self.decisions[-1]['evidence'] = dict(source=source if observed is None else 'complete_local_stage_peak',
             cold_estimate_bytes=estimate, observed_peak_bytes=observed, video_and_reference_tokens=rows,
             head_chunk=options.get('head_chunk', 8), window_batch=options.get('window_batch', 1),
@@ -446,7 +465,11 @@ class ModelBank:
             peak = max(weights, gpu_bytes(clip)) + max(2*GiB, workspace)
         else:
             source = 'encoder_checkpoint_estimate'
-        self.make_room('encoder', min(self.gpu_budget, peak), model=clip, ram_need=2*GiB)
+        # Measured: a reused encoder grew the whole session's guarded working
+        # set by 4 GiB beside 21.5 GiB of retained engine weights, passing a
+        # 25 GiB budget that a 2 GiB admission had accepted. Charge 4 GiB so
+        # the retained host copy is parked first on tight machines.
+        self.make_room('encoder', min(self.gpu_budget, peak), model=clip, ram_need=4*GiB)
         self.decisions[-1]['evidence'] = dict(source=source, cold_estimate_bytes=int(fallback_peak),
                                             requested_peak_bytes=int(peak))
 

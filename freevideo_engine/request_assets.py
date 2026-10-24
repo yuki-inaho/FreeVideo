@@ -61,7 +61,11 @@ def _prompt_vlm(root):
     from .prompt_vlm import assets
     if assets.settle(root):
         return []
-    spec = assets.catalog()
+    try:
+        spec = assets.catalog()
+    except (OSError, ValueError):
+        # Nothing to download from, so the request is not ready for the rewrite step.
+        return [dict(id='prompt-vlm', kind='prompt-vlm', files=0, bytes=0, source='', action='unavailable')]
     return [dict(id='prompt-vlm', kind='prompt-vlm', files=len(spec['files']),
                  bytes=sum(row['bytes'] for row in spec['files']), source='', action='consent')]
 
@@ -75,7 +79,8 @@ def inspect(root, machine, request, *, lora_names=None):
     lora_names: the LoRA files that exist; None skips the LoRA check.
     Every item: id, kind, files, bytes, source (id of the source tried first,
     '' when not applicable) and action: 'auto' is fetched when Generate starts,
-    'consent' asks first, 'manual' means the user adds the file.
+    'consent' asks first, 'manual' means the user adds the file, 'unavailable' means
+    the item's own list of files cannot be read, so it cannot be fetched at all.
     """
     root = Path(root)
     sampled, items = _sampling(root, machine, request)

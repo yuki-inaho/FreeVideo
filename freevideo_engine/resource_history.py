@@ -411,7 +411,7 @@ class ResourceHistory:
             if outcome == 'discarded':
                 if (details or {}).get('kind') in ('cuda_error', 'unknown_worker_exit'):
                     from .compatibility import Store
-                    Store(self.path.parent).incident(self._row(row), details['kind'])
+                    Store(self.path.parent).incident(self._row(row), details['kind'], evidence=details)
                 db.execute('DELETE FROM attempts WHERE id=?',(attempt_id,))
                 return {'id':attempt_id,'outcome':'discarded'}
             observed = self._observation(observation, row)

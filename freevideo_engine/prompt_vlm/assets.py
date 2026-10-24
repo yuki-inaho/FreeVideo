@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import shutil
+import sys
 import threading
 from .. import disk_space
 
@@ -9,7 +10,31 @@ FAMILY = 'image-models'
 
 
 def catalog():
-    return json.loads(Path(__file__).with_name('model.json').read_text(encoding='utf-8'))
+    """The model list shipped beside this file.
+
+    A frozen launcher also carries the engine source; its copy answers when the
+    unpacked one is gone (a cleaned temporary folder, antivirus, an interrupted
+    unpack). Nothing is remembered, so a restored file is used at once."""
+    name = 'model.json'
+    paths = [Path(__file__).with_name(name)]
+    bundle = getattr(sys, '_MEIPASS', None)
+    if bundle:
+        paths.append(Path(bundle) / 'engine-source' / 'freevideo_engine' / 'prompt_vlm' / name)
+    for path in paths:
+        try:
+            return json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as error:
+            missing = error
+    raise missing
+
+
+def available():
+    """False while the model list cannot be read; nothing can be described or offered then."""
+    try:
+        catalog()
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def directory(root):
@@ -38,8 +63,8 @@ _RUNNING = set()
 
 
 def _state(root, wait):
-    spec, folder = catalog(), directory(root)
     try:
+        spec, folder = catalog(), directory(root)
         receipt = json.loads((folder / 'verified.json').read_text(encoding='utf-8'))
         if receipt.get('revision') != spec['revision']:
             return False
@@ -73,8 +98,8 @@ def checking(root):
 
     A cheap look at the same file identity ready() uses, for a page that must not
     call the model missing, or offer its download, in the meantime."""
-    spec, folder = catalog(), directory(root)
     try:
+        spec, folder = catalog(), directory(root)
         receipt = json.loads((folder / 'verified.json').read_text(encoding='utf-8'))
         if receipt.get('revision') != spec['revision']:
             return False

@@ -5,6 +5,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -47,6 +48,9 @@ def _line(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
 
 
+STAGE_SECONDS = 120
+
+
 class Sessions:
     def __init__(self, root: Path, *, clock=time.time, max_events=20000):
         self.root = Path(root)
@@ -60,6 +64,8 @@ class Sessions:
         self._initial_seq = {}
         self._readers = {}
         self._user_seq = {}  # Last event the user wrote; unread() skips the file when nothing is newer.
+        self._turn = {}  # [last message the user wrote, the one they gave up on]: a turn is given up until they speak again.
+        self._stage = {}  # What the agent last said it was doing: (key, when). Not kept across restarts.
         # When each session began or its user last acted in it (spoke, answered), and the user's first words
         # there: the conversation the user is in, and what the page calls each one in its history.
         self._acted = {}
@@ -82,44 +88,65 @@ class Sessions:
         return self._meta[sid]
 
     def _load(self):
-        for path in sorted(self.root.glob('s*.jsonl')):
+        try:
+            paths = sorted(self.root.glob('s*.jsonl'))
+        except OSError:
+            logging.getLogger(__name__).warning('Could not list saved sessions; starting without them')
+            return
+        for path in paths:
             sid = path.stem
             if schema.issues(schema.SESSION, sid) or path.is_symlink():
                 continue
-            with path.open('rb') as stream:
-                first = stream.readline()
+            try:
+                self._load_file(path, sid)
+            except OSError:
+                # One unreadable file must not stop the agent from starting.
+                for table in (self._meta, self._ids, self._clients, self._acted, self._said, self._initial_seq, self._user_seq):
+                    table.pop(sid, None)
+                self._chosen.discard(sid)
+                self._partial.discard(sid)
+                logging.getLogger(__name__).warning('Skipped an unreadable session file')
+
+    def _load_file(self, path, sid):
+        with path.open('rb') as stream:
+            first = stream.readline()
+            try:
+                meta = json.loads(first)
+                if not first.endswith(b'\n') or meta.get('session') != sid:
+                    return
+                _check(schema.session_metadata(), meta)
+            except (ValueError, UnicodeDecodeError, SessionError, AttributeError):
+                return
+            self._meta[sid] = dict(id=sid, title=meta['title'], created_at=meta['created_at'],
+                updated_at=meta['created_at'], client=meta['client'], last_seq=0, stopped=False)
+            self._ids[sid] = {}
+            self._clients[sid] = {meta['client']} if meta['client'] else set()
+            self._acted[sid] = (meta['created_at'], 1)
+            if meta.get('by') == 'user':
+                self._chosen.add(sid)
+            for row in stream:
+                if not row.endswith(b'\n'):
+                    self._partial.add(sid)
+                    break
                 try:
-                    meta = json.loads(first)
-                    if not first.endswith(b'\n') or meta.get('session') != sid:
+                    event = json.loads(row)
+                    _check(schema.session_event(stored=True), event)
+                    if event['seq'] != self._meta[sid]['last_seq'] + 1:
                         continue
-                    _check(schema.session_metadata(), meta)
-                except (ValueError, UnicodeDecodeError, SessionError, AttributeError):
+                except (ValueError, UnicodeDecodeError, SessionError):
+                    # Also skips an interrupted tail separated by a later append.
                     continue
-                self._meta[sid] = dict(id=sid, title=meta['title'], created_at=meta['created_at'],
-                    updated_at=meta['created_at'], client=meta['client'], last_seq=0, stopped=False)
-                self._ids[sid] = {}
-                self._clients[sid] = {meta['client']} if meta['client'] else set()
-                self._acted[sid] = (meta['created_at'], 1)
-                if meta.get('by') == 'user':
-                    self._chosen.add(sid)
-                for row in stream:
-                    if not row.endswith(b'\n'):
-                        self._partial.add(sid)
-                        break
-                    try:
-                        event = json.loads(row)
-                        _check(schema.session_event(stored=True), event)
-                        if event['seq'] != self._meta[sid]['last_seq'] + 1:
-                            continue
-                    except (ValueError, UnicodeDecodeError, SessionError):
-                        # Also skips an interrupted tail separated by a later append.
-                        continue
-                    self._fold(sid, event)
-                self._initial_seq[sid] = self._meta[sid]['last_seq']
+                self._fold(sid, event)
+            self._initial_seq[sid] = self._meta[sid]['last_seq']
 
     def _fold(self, sid, event):
         meta = self._meta[sid]
         meta.update(last_seq=event['seq'], updated_at=event['at'])
+        turn = self._turn.setdefault(sid, [0, 0])
+        if event['by'] == 'user' and event['type'] == 'message':
+            turn[0] = event['seq']
+        elif event['type'] == 'control' and event['action'] == 'abandoned':
+            turn[1] = turn[0]
         if event['by'] == 'user':
             self._user_seq[sid] = event['seq']
             # No counter here: the order must come out the same when the files are read again after a
@@ -195,7 +222,7 @@ class Sessions:
             self._path(sid).unlink(missing_ok=True)
             self._closing.discard(sid)
             waiters = self._waiters.pop(sid, ())
-            for kept in (self._meta, self._ids, self._clients, self._initial_seq, self._user_seq, self._acted, self._said):
+            for kept in (self._meta, self._ids, self._clients, self._initial_seq, self._user_seq, self._turn, self._stage, self._acted, self._said):
                 kept.pop(sid, None)
             self._chosen.discard(sid)
             self._partial.discard(sid)
@@ -265,6 +292,8 @@ class Sessions:
                 raise SessionError('session_full', 'Session event limit reached')
             self._write(sid, result)
             self._fold(sid, result)
+            if kind in ('message', 'plan', 'step'):
+                self._stage.pop(sid, None)
             for loop, signal in self._waiters.get(sid, ()):
                 try:
                     loop.call_soon_threadsafe(signal.set)
@@ -428,6 +457,32 @@ class Sessions:
         with self.lock:
             return self._get(sid)['stopped']
 
+    def abandoned(self, sid) -> bool:
+        """The user gave up on the turn they last spoke in, and has not spoken since."""
+        with self.lock:
+            self._get(sid)
+            said, gave_up = self._turn.get(sid, (0, 0))
+            return gave_up > 0 and gave_up == said
+
+    def report_stage(self, sid, key) -> None:
+        _check(schema.STAGE, key)
+        with self.lock:
+            self._get(sid)
+            self._stage[sid] = (key, self.clock())
+
+    def stage(self, sid, *, within=STAGE_SECONDS) -> str | None:
+        """The stage the agent reported, while it is recent and the turn it belongs to is still open."""
+        with self.lock:
+            self._get(sid)
+            known = self._stage.get(sid)
+            if known is None or self.clock() - known[1] > within:
+                return None
+            return known[0]
+
+    def clear_stage(self, sid) -> None:
+        with self.lock:
+            self._stage.pop(sid, None)
+
     def unread(self, sid, reader: str) -> list[dict]:
         _check(schema.string(80), reader)
         with self.lock:
@@ -439,7 +494,8 @@ class Sessions:
                 return []
             rows = self._events(sid, after, self.max_events)
             return [row for row in rows if row['by'] == 'user' and (row['type'] == 'message'
-                    or row['type'] == 'confirm' and row['state'] in ('approved', 'declined'))]
+                    or row['type'] == 'confirm' and row['state'] in ('approved', 'declined')
+                    or row['type'] == 'control' and row['action'] == 'abandoned')]
 
 
 class Confirmations:
@@ -472,7 +528,7 @@ class Confirmations:
             os.replace(temporary, self.path)
         return value
 
-    def gate(self, action, *, by, estimate_seconds, refs, question):
+    def gate(self, action, *, by, estimate_seconds, refs, question, shape=None):
         sid, digest = errors.SESSION.get(), errors.CONFIRM.get()
         if by != 'agent' or sid is None or digest is None:
             return
@@ -493,6 +549,8 @@ class Confirmations:
                              refs=refs, digest=digest, state='asked')
                 if estimate_seconds is not None:
                     event['estimate_seconds'] = round(estimate_seconds)
+                # What is about to be made, for the card the user answers; only what is known is written.
+                event.update({key: shape[key] for key in ('width', 'height', 'seconds') if shape and shape.get(key) is not None})
                 row = self.sessions.append(sid, event, by='system')
         raise SessionError('needs_confirmation', 'Waiting for the user',
                            details=[dict(confirm=row['id'], seconds=row.get('estimate_seconds'))])

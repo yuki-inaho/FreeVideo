@@ -633,16 +633,16 @@ class Jobs:
             report_id = error.get('report_id')
             if code == 'invalid_json' and row['kind'] in ('vlm', 'enhance'):
                 code = 'vlm_invalid_json'
-            reason_zh = errors.failure_reason(dict(error, code=code))
+            reason_zh, reason_en = errors.failure_reason(dict(error, code=code)), errors.failure_reason_en(dict(error, code=code))
             if code != error.get('code') or not error.get('request_id') or row['kind'] == 'image':
                 error = errors.build(code, details=error.get('details'),
                     request=row.get('request_id'), action_required=code != 'cancelled',
                     kind=row['kind'], stage='terminal', resumable=not row['spec'].get('refine_from'),
                     report_id=error.get('report_id'))
                 if row['kind'] == 'image':
-                    reason_zh = error['error_zh']
+                    reason_zh, reason_en = error['error_zh'], error['error_en']
         if error is not None:
-            error = dict(error, request_id=row.get('request_id') or error['request_id'], error_zh=reason_zh)
+            error = dict(error, request_id=row.get('request_id') or error['request_id'], error_zh=reason_zh, error_en=reason_en)
             if row['kind'] != 'image' and isinstance(report_id, str) and re.fullmatch(r'[a-f0-9]{32}', report_id):
                 error['report_id'] = report_id
             if error.get('next'):
@@ -1123,7 +1123,7 @@ class Jobs:
                     details=result['error'].get('details'), request=row.get('request_id'),
                     action_required=result['error']['code'] != 'cancelled', report_id=row['error'].get('report_id'))
             else:
-                result['error'] = dict(result['error'], error_zh=errors.failure_reason(row['error']))
+                result['error'] = dict(result['error'], **errors.reasons(row['error']))
                 report_id = row['error'].get('report_id')
                 if isinstance(report_id, str) and re.fullmatch(r'[a-f0-9]{32}', report_id):
                     result['error']['report_id'] = report_id
@@ -1808,7 +1808,7 @@ class Jobs:
             next_action = 'Use the alternatives in details to lower size or duration, then POST /freevideo/agent/v1/jobs.'
         failure = dict(chain_error(code, errors.ERRORS[code][2], next_action, details=[detail],
                            retryable=code != 'insufficient_memory').view(),
-                    error_zh=errors.failure_reason(dict(code=code, message=message)))
+                    **errors.reasons(dict(code=code, message=message)))
         if isinstance(report_id, str) and re.fullmatch(r'[a-f0-9]{32}', report_id):
             failure['report_id'] = report_id
         return failure

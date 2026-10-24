@@ -1,7 +1,8 @@
 // ComfyUI owns execution. This controller only submits frozen workflows and
 // replenishes a loop after its previous request has actually completed.
 import {fetchQueueRead, detectBrowserExtension, isNetworkTypeError} from './browser_extension.js';
-const clone = value => structuredClone(value);
+import {clonePrompt} from './optional_inputs.js';
+const clone = clonePrompt;
 
 // One dropped read is usually a connection reset or an engine restart. Only this many
 // polls failing in a row are shown; the next successful read clears the notice.

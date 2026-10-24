@@ -101,6 +101,14 @@ export function activeText(record, frame) {
     return record.tracks.filter(t => isTextTrack(t) && !t.hidden).sort((a,b) => (a.kind === 'text' ? -1 : 1) - (b.kind === 'text' ? -1 : 1))
         .flatMap(t => t.clips.filter(c => c.start <= frame && c.start+c.frames > frame).map(c => ({...c, style: styleOf(record,c), opacity: c.text_kind === 'text' && styleOf(record,c).fade ? Math.min(1,(frame-c.start+.5)/7.2,(c.start+c.frames-frame-.5)/7.2) : 1})));
 }
+// A subtitle file's bytes as text: UTF-8, UTF-16 with its byte-order mark, or else the older local encoding
+// (`legacy`, e.g. GBK for Chinese), so such a file never turns into replacement characters.
+export function decodeSRT(bytes, legacy = 'windows-1252') {
+    const view = new Uint8Array(bytes);
+    if (view[0] === 0xff && view[1] === 0xfe) return new TextDecoder('utf-16le').decode(view);
+    if (view[0] === 0xfe && view[1] === 0xff) return new TextDecoder('utf-16be').decode(view);
+    try { return new TextDecoder('utf-8', {fatal: true}).decode(view); } catch { return new TextDecoder(legacy).decode(view); }
+}
 export function parseSRT(text, result = {}) {
     check(typeof text === 'string' && text.length <= 4*1024*1024, 'srt');
     const blocks = text.replace(/^\ufeff/, '').replace(/\r\n?/g,'\n').trim().split(/\n\s*\n/);
@@ -126,7 +134,7 @@ export function parseSRT(text, result = {}) {
     if (skipped) console.warn(`FreeVideo SRT import skipped ${skipped} unreadable blocks.`);
     if (trimmed) console.warn(`FreeVideo SRT import trimmed ${trimmed} overlapping subtitles.`);
     check(entries.length > 0, 'srt');
-    result.truncated = entries.length > 500;
+    result.skipped = skipped; result.truncated = entries.length > 500;
     if (result.truncated) console.warn('FreeVideo SRT import kept only the first 500 subtitles.');
     return entries.slice(0, 500);
 }

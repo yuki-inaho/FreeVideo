@@ -36,7 +36,7 @@ ApplicationWindow {
     property bool compact: width < 1000
     property bool narrow: width < 640
     property bool shortWindow: height < 700
-    onModelInfoOpenChanged: if (modelInfoOpen) backend.prepareDownloadList()
+    onModelInfoOpenChanged: if (modelInfoOpen) backend.prepareDownloadList(); else backend.setDownloadScope("video")
     readonly property bool manualEnvironment: s.offline.runtime_supported !== false && s.form.new_comfy && s.form.environment_method === "manual"
     readonly property bool usingRuntime: manualEnvironment && s.offline.runtime
     readonly property bool needsRuntime: s.page === "comfy" && manualEnvironment && !s.offline.runtime
@@ -403,7 +403,7 @@ ApplicationWindow {
                 Item { height: shortWindow ? 0 : 16 }
                 ColumnLayout {
                     Layout.fillWidth: true; spacing: 8; Layout.bottomMargin: shortWindow ? 0 : 10
-                    FText { objectName: "pageHeading"; horizontalAlignment: Text.AlignHCenter; text: s.page === "launcher" ? t("Your workspace", "你的工作空间") : s.page === "comfy" ? t("Set up FreeVideo", "安装 FreeVideo") : s.page === "models" ? t("Set up your models", "准备模型") : s.status === "review" ? t("Ready to install", "确认安装") : s.busy ? t("Setting things up", "正在准备 FreeVideo") : t("Continue your setup", "继续安装"); font.pixelSize: win.compact ? 26 : theme.hero; font.weight: Font.DemiBold; font.letterSpacing: -0.6; Layout.fillWidth: true }
+                    FText { objectName: "pageHeading"; horizontalAlignment: Text.AlignHCenter; text: s.page === "launcher" ? t("Your workspace", "工作空间") : s.page === "comfy" ? t("Set up FreeVideo", "安装 FreeVideo") : s.page === "models" ? t("Set up your models", "准备模型") : s.status === "review" ? t("Ready to install", "确认安装") : s.busy ? t("Setting things up", "正在准备 FreeVideo") : t("Continue your setup", "继续安装"); font.pixelSize: win.compact ? 26 : theme.hero; font.weight: Font.DemiBold; font.letterSpacing: -0.6; Layout.fillWidth: true }
                     FText { objectName: "actionNotice"; visible: !!s.action_notice; text: s.action_notice || ""; color: theme.muted; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter }
                 }
 
@@ -443,7 +443,7 @@ ApplicationWindow {
                             FButton { objectName: "chooseDisk"; visible: diskFailure && s.form.new_comfy && diskChoices.length > (bestDisk ? 1 : 0); enabled: !s.busy
                                       text: t("Other disks…", "其他硬盘…"); onClicked: diskDialogOpen = true }
                             FButton { objectName: "diskCleanupButton"; visible: s.failure.kind === "disk"; enabled: s.can_cleanup; text: t("Clean download cache", "清理缓存"); onClicked: { settingsTab = "general"; settingsOpen = true; backend.cleanupDownloads(false) } }
-                            FButton { visible: s.failure.kind === "download"; text: t("Change source", "切换下载源"); onClicked: { settingsTab = "downloads"; settingsOpen = true } }
+                            FButton { objectName: "changeSource"; visible: s.failure.kind === "download" || s.failure.kind === "model-source"; text: t("Change source", "切换下载源"); onClicked: { settingsTab = "downloads"; settingsOpen = true } }
                             FButton { objectName: "repairCardButton"; primary: true; visible: !!s.repair_offered; text: t("Repair", "修复"); onClicked: backend.action("repair", false) }
                             FButton { objectName: "latestLauncherLink"; visible: s.failure.kind === "older-launcher"; flat: true
                                       text: t("Download the latest ↗", "下载最新版 ↗"); onClicked: backend.link("https://github.com/FlashML-org/FreeVideo/releases/latest") }
@@ -634,7 +634,7 @@ ApplicationWindow {
                                     delegate: FButton { required property var modelData; required property int index; objectName: "offlineShare-" + index; text: t("Download from Quark ↗", "打开夸克网盘 ↗"); onClicked: backend.link(modelData.url) }
                                 }
                                 FText { objectName: "offlinePackageGuide"; text: s.offline.guide; color: theme.muted; font.pixelSize: theme.micro; Layout.fillWidth: true }
-                                FButton { objectName: "otherModelLinks"; text: downloads.copy.title + "  ›"; flat: true; enabled: !s.busy; implicitHeight: theme.heightSm; leftPadding: 0; font.pixelSize: theme.micro + 1; onClicked: modelInfoOpen = true }
+                                FButton { objectName: "otherModelLinks"; text: downloads.copy.title + "  ›"; flat: true; enabled: !s.busy; implicitHeight: theme.heightSm; leftPadding: 0; font.pixelSize: theme.micro + 1; onClicked: { backend.setDownloadScope("video"); modelInfoOpen = true } }
                             }
                             ColumnLayout {
                                 Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; spacing: 10
@@ -675,7 +675,7 @@ ApplicationWindow {
                         }
                         RowLayout {
                             objectName: "promptModelRow"
-                            visible: !!s.prompt_model && !s.prompt_model.ready && !s.prompt_model.checking
+                            visible: !!s.prompt_model && !s.prompt_model.ready && !s.prompt_model.checking && !s.prompt_model.unavailable
                             Layout.fillWidth: true; spacing: 14
                             FCheck {
                                 objectName: "promptModelSwitch"; Layout.fillWidth: true
@@ -800,7 +800,7 @@ ApplicationWindow {
                                 }
                                 // What this group downloads, as in the plan; nothing for one already here.
                                 FText { objectName: "modelSize-" + modelData.id; visible: modelData.download > 0; text: bytes(modelData.download).replace(" ", "\u00a0"); font.pixelSize: theme.micro; color: theme.muted; font.features: { "tnum": 1 } }
-                                FButton { objectName: "modelFiles-" + modelData.id; text: downloads.copy.title + "  ›"; implicitHeight: theme.heightSm; flat: true; font.pixelSize: theme.micro + 1; visible: s.form.model_method === "manual"; onClicked: modelInfoOpen = true }
+                                FButton { objectName: "modelFiles-" + modelData.id; text: downloads.copy.title + "  ›"; implicitHeight: theme.heightSm; flat: true; font.pixelSize: theme.micro + 1; visible: s.form.model_method === "manual"; onClicked: { backend.setDownloadScope(modelData.id === "image" ? "image" : "video"); modelInfoOpen = true } }
                             }
                         }
                     }
@@ -890,7 +890,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true; spacing: 6
                                 // A failed start stays failed while another task (an import, a cleanup) runs: the controller's own tasks clear it first.
                                 FText { objectName: "statusTitle"; text: s.status === "open" ? t("FreeVideo is ready", "FreeVideo 已就绪") : s.status === "failed" ? t("Startup interrupted", "启动未完成") : s.busy ? t("Starting ComfyUI", "正在启动 ComfyUI") : s.status === "restart-required" ? t("Restart ComfyUI", "请重启 ComfyUI") : t("Ready to launch", "准备就绪"); font.pixelSize: theme.section + 2; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                                FText { objectName: "statusDetail"; text: s.status === "open" ? s.url : s.status === "restart-required" ? t("Restart ComfyUI after the update, then select \"Connect again\".", "更新后需重启 ComfyUI，再点“重新连接”。") : s.status === "failed" ? t("ComfyUI did not start. See the message above.", "ComfyUI 未能启动，原因见上方。") : t("Your models and environment are connected.", "已连接你的模型与运行环境。"); color: theme.muted; Layout.fillWidth: true }
+                                FText { objectName: "statusDetail"; text: s.status === "open" ? s.url : s.status === "restart-required" ? t("Restart ComfyUI after the update, then select \"Connect again\".", "更新后需重启 ComfyUI，再点“重新连接”。") : s.status === "failed" ? t("ComfyUI did not start. See the message above.", "ComfyUI 未能启动，原因见上方。") : t("Your models and environment are connected.", "已连接模型与运行环境。"); color: theme.muted; Layout.fillWidth: true }
                                 FText { objectName: "portMovedNote"; visible: s.status === "open" && s.port_from > 0; text: t("Port %1 is in use by another program, so FreeVideo now uses port %2 and will keep using this address.", "端口 %1 已被其他程序占用，FreeVideo 改用端口 %2，以后也使用这个地址。").arg(s.port_from).arg(s.port_to); font.pixelSize: 13; color: theme.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true; Layout.topMargin: -2 }
                                 FText { objectName: "pluginScopedNote"; visible: s.status === "open" && s.plugin_scoped; text: t("Some installed plugins are not compatible with FreeVideo, so only FreeVideo was loaded this time.", "部分已装的插件与 FreeVideo 不兼容，这次只载入了 FreeVideo。"); font.pixelSize: 13; color: theme.muted; wrapMode: Text.WordWrap; Layout.fillWidth: true; Layout.topMargin: -2 }
                             }
@@ -1617,13 +1617,13 @@ ApplicationWindow {
             RowLayout {
                 objectName: "downloadListActions"; Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 8
                 // The actions share what the Close button leaves, so a long label wraps instead of leaving the dialog.
-                readonly property int actionCount: checkDownloadList.visible ? 3 : 2
+                readonly property int actionCount: (checkDownloadList.visible ? 1 : 0) + (downloads.scope === "image" ? 1 : 2)
                 readonly property real actionWidth: Math.max(80, Math.floor((width - closeDownloadList.implicitWidth - (actionCount + 1) * spacing) / actionCount))
                 FButton { id: closeDownloadList; text: downloads.copy.close; flat: true; onClicked: modelInfoOpen = false }
                 Item { Layout.fillWidth: true }
-                FButton { id: checkDownloadList; objectName: "checkDownloadList"; Layout.maximumWidth: parent.actionWidth; visible: !downloads.available || s.download_list.needs_check; text: downloads.copy.check; enabled: !s.busy; onClicked: backend.prepareDownloadList() }
-                FButton { objectName: "useDownloadedFolder"; Layout.maximumWidth: parent.actionWidth; text: downloads.copy.use_folder; enabled: s.can_manage; onClicked: backend.useDownloadedFolder() }
-                FButton { objectName: "exportDownloadList"; Layout.maximumWidth: parent.actionWidth; text: downloads.copy.export; primary: true; enabled: downloads.available && !s.busy; onClicked: backend.exportDownloadList() }
+                FButton { id: checkDownloadList; objectName: "checkDownloadList"; Layout.maximumWidth: parent.actionWidth; visible: downloads.scope !== "image" && (!downloads.available || s.download_list.needs_check); text: downloads.copy.check; enabled: !s.busy; onClicked: backend.prepareDownloadList() }
+                FButton { objectName: "useDownloadedFolder"; visible: downloads.scope !== "image"; Layout.maximumWidth: parent.actionWidth; text: downloads.copy.use_folder; enabled: s.can_manage; onClicked: backend.useDownloadedFolder() }
+                FButton { objectName: "exportDownloadList"; Layout.maximumWidth: parent.actionWidth; text: downloads.copy.export; primary: true; enabled: downloads.available && (downloads.scope === "image" || !s.busy); onClicked: backend.exportDownloadList() }
             }
         }
     }
@@ -1706,7 +1706,7 @@ ApplicationWindow {
             spacing: 14
             FText { objectName: "updateActionNotice"; visible: !!s.action_notice; text: s.action_notice || ""; color: theme.muted; Layout.fillWidth: true }
             FText { text: s.update.candidate ? t("Update available", "有可用更新") : s.update.engine ? t("Engine update", "引擎更新") : t("Updates", "更新"); font.pixelSize: theme.section + 2; font.weight: Font.DemiBold }
-            FText { objectName: "updateDialogText"; text: s.update.phase === "waiting" ? t("A video is still generating. FreeVideo restarts and updates as soon as it finishes.", "还有视频正在生成，完成后会自动重启并更新。") : s.update.status === "ready" && s.update.candidate ? t("Downloaded. Restart to finish; models and settings are kept.", "下载完成，重启即可完成更新，模型和设置都会保留。") : s.update.candidate && s.update.manual ? t("FreeVideo ", "FreeVideo ") + releaseVersion(s.update.candidate) + t(" is available (current ", " 已发布（当前 ") + releaseVersion(currentRelease) + t("). Download it and replace this version; models and settings are kept.", "）。下载新版后替换当前版本，模型和设置会保留。") : s.update.candidate ? t("FreeVideo ", "FreeVideo ") + releaseVersion(s.update.candidate) + t(" is available (current ", " 已发布（当前 ") + releaseVersion(currentRelease) + t("). Updating keeps your models and settings. FreeVideo restarts after the download; running videos finish first.", "）。更新会保留模型和设置，下载完成后自动重启；正在生成的视频会先完成。") : s.update.engine ? t("This launcher already includes engine ", "启动器已带有新版引擎 ") + releaseVersion(currentRelease) + t(" (installed: ", "（已安装 ") + engineVersion + (s.status === "open" ? t("). Updating takes about a minute, restarts ComfyUI once and keeps your models and settings.", "）。更新约需 1 分钟，会重启一次 ComfyUI，模型和设置都会保留。") : t("). Updating takes about a minute, then FreeVideo starts; models and settings are kept.", "）。更新约需 1 分钟，完成后自动启动，模型和设置都会保留。")) : s.update.status === "current" ? t("You're up to date.", "已是最新版本。") : s.update.status === "development" ? t("Running from source. Update with Git.", "当前从源码运行，请通过 Git 更新。") : s.update.status === "error" ? t("Could not check for updates.", "暂时无法检查更新。") : t("Checking the latest release…", "正在检查最新版本…"); color: theme.muted; Layout.fillWidth: true }
+            FText { objectName: "updateDialogText"; text: s.update.phase === "waiting" ? t("A video is still generating. FreeVideo restarts and updates as soon as it finishes.", "还有视频正在生成，完成后会自动重启并更新。") : s.update.status === "ready" && s.update.candidate ? t("Downloaded. Restart to finish; models and settings are kept.", "下载完成，重启可完成更新，模型和设置都会保留。") : s.update.candidate && s.update.manual ? t("FreeVideo ", "FreeVideo ") + releaseVersion(s.update.candidate) + t(" is available (current ", " 已发布（当前 ") + releaseVersion(currentRelease) + t("). Download it and replace this version; models and settings are kept.", "）。下载新版后替换当前版本，模型和设置会保留。") : s.update.candidate ? t("FreeVideo ", "FreeVideo ") + releaseVersion(s.update.candidate) + t(" is available (current ", " 已发布（当前 ") + releaseVersion(currentRelease) + t("). Updating keeps your models and settings. FreeVideo restarts after the download; running videos finish first.", "）。更新会保留模型和设置，下载完成后自动重启；正在生成的视频会先完成。") : s.update.engine ? t("This launcher already includes engine ", "启动器已带有新版引擎 ") + releaseVersion(currentRelease) + t(" (installed: ", "（已安装 ") + engineVersion + (s.status === "open" ? t("). Updating takes about a minute, restarts ComfyUI once and keeps your models and settings.", "）。更新约需 1 分钟，会重启一次 ComfyUI，模型和设置都会保留。") : t("). Updating takes about a minute, then FreeVideo starts; models and settings are kept.", "）。更新约需 1 分钟，完成后自动启动，模型和设置都会保留。")) : s.update.status === "current" ? t("You're up to date.", "已是最新版本。") : s.update.status === "development" ? t("Running from source. Update with Git.", "当前从源码运行，请通过 Git 更新。") : s.update.status === "error" ? t("Could not check for updates.", "暂时无法检查更新。") : t("Checking the latest release…", "正在检查最新版本…"); color: theme.muted; Layout.fillWidth: true }
             FText { visible: !!s.update.error; text: s.update.error || ""; color: theme.danger; Layout.fillWidth: true; font.pixelSize: theme.micro }
             FButton { objectName: "updateManualDownloadButton"; text: t("Download from the release page ↗", "去发布页手动下载 ↗"); flat: true; Layout.fillWidth: true; visible: s.update.status === "error" && !!s.update.release_page; onClicked: backend.link(s.update.release_page) }
             FButton { objectName: "updateDialogReport"; text: t("Report a problem", "提交问题"); flat: true; Layout.fillWidth: true; visible: s.update.status === "error" && !!s.update.error; onClicked: backend.reportProblem(s.update.error, t("Update", "更新")) }

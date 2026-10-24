@@ -11,7 +11,7 @@ import re
 import struct
 import threading
 
-from .lora_names import INT8_UNMERGEABLE, _targets, adapter_keys, int8_skip_reason, resolve_target
+from .lora_names import INT8_UNMERGEABLE, _targets, adapter_keys, int8_skip_reason, resolve_target, supported
 
 MAX_HEADER_BYTES = 64 * 1024 * 1024
 BLOCKS, REFINER_BLOCKS = 50, 2
@@ -58,6 +58,11 @@ def _layout():
 
 LAYOUT = _layout()
 UNUSABLE = 'This LoRA was not trained for the FreeVideo model and cannot be used.'
+ACCELERATION = ('This acceleration LoRA was made for the original model and cannot be used. '
+                'The FreeVideo model is already accelerated and does not need one.')
+# Step-distillation adapters (for example parallel-decoding ones) ship a bank of
+# whole replacement output heads, one per stretch of the sampling schedule.
+HEADS = ('proj_out', 'audio_proj_out')
 _CACHE, _LOCK = {}, threading.Lock()
 
 
@@ -115,6 +120,17 @@ def _bad(reason, keys, **detail):
     return dict(reason=reason, family=family(keys) if reason == 'other-model' else None, **detail)
 
 
+def _head_bank(shapes):
+    """The first tensor that is a stack of whole output-head weights, or None."""
+    for key, shape in shapes.items():
+        if not key.endswith('.weight') or len(shape) != 3:
+            continue
+        name = _targets(key[:-7])[0][0]
+        if name in HEADS and list(shape[1:]) == list(LAYOUT[name]):
+            return key
+    return None
+
+
 def _block(target):
     found = re.search(r'blocks\.(\d+)\.', target)
     return int(found[1]) + 1 if found else None
@@ -122,15 +138,22 @@ def _block(target):
 
 def assess(shapes, *, int8_targets=None, skipped=None):
     """None when the adapter fits, else why not: reason 'other-model' (names of another model), 'shape' (our names,
-    a different size) or 'format' (not a LoRA we can read). 'layer' and the sizes say where. A layer name the table
-    does not list, in a file that matches no other known model, is let through.
+    a different size), 'acceleration' (a step-distillation adapter that replaces the output heads and needs its own
+    sampler) or 'format' (not a LoRA we can read; 'layer' names the first tensor that is not a LoRA factor).
+    'layer' and the sizes say where. A layer name the table does not list, in a file that matches no other known
+    model, is let through.
     With int8_targets, use the installed linear shapes and collect the runtime's
     skipped patch categories; 'int8-unmergeable' means every patch was skipped."""
     keys = list(shapes)
+    heads = _head_bank(shapes)
+    if heads:
+        return _bad('acceleration', keys, layer=heads)
     try:
         pairs, full = adapter_keys(keys)
     except ValueError:
-        return _bad('other-model' if family(keys) else 'format', keys, layer=None)
+        if family(keys):
+            return _bad('other-model', keys, layer=None)
+        return _bad('format', keys, layer=next((key for key in keys if not supported(key)), None))
     if not any('A' in pair for pair in pairs.values()) and not full:
         return _bad('format', keys, layer=None)
     wrong, applied = [], set()
@@ -263,4 +286,4 @@ def require_usable(path):
     """Stop a request before generation starts when a LoRA cannot work with the model."""
     result = check_installed_file(path)
     if not result['usable']:
-        raise ValueError(INT8_UNMERGEABLE if result['reason'] == 'int8-unmergeable' else UNUSABLE)
+        raise ValueError({'int8-unmergeable': INT8_UNMERGEABLE, 'acceleration': ACCELERATION}.get(result['reason'], UNUSABLE))

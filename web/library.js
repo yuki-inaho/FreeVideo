@@ -93,7 +93,7 @@ export async function libraryPage(t, {limit = 24, before = null, signal} = {}) {
     const query = new URLSearchParams({limit: String(limit)});
     if (before) query.set('before', before);
     const response = await api.fetchApi('/freevideo/library?' + query, {signal});
-    if (response.status === 404) throw Object.assign(new Error(t('Restart ComfyUI to open your creations after updating.', '更新后重启 ComfyUI，即可打开作品。')), {restart: true});
+    if (response.status === 404) throw Object.assign(new Error(t('Restart ComfyUI to open your creations after updating.', '更新后重启 ComfyUI，可打开作品。')), {restart: true});
     if (!response.ok) throw new Error(t('Could not load your creations. Try Refresh.', '作品暂时无法读取，请点击刷新。'));
     return response.json();
 }
@@ -144,15 +144,18 @@ async function workflowBackfill(collection, t) {
         const result = value?.result || {};
         heading.textContent = result.embedded ? t(`Workflows added to ${result.embedded} videos`, `已为 ${result.embedded} 个视频补上工作流`) : t('No video was changed', '没有视频被改动');
         text.textContent = result.embedded
-            ? t('Drag them onto the canvas to restore their workflow. The originals are kept next to them as video.before-workflow.mp4.', '把它们拖到画布上即可还原工作流。原视频保留在各自目录，文件名为 video.before-workflow.mp4。')
+            ? t('Drag them onto the canvas to restore their workflow. The originals are kept next to them as video.before-workflow.mp4.', '把它们拖到画布上可还原工作流。原视频保留在各自目录，文件名为 video.before-workflow.mp4。')
             : t('Videos that could not be checked safely were left as they were.', '无法安全确认的视频都保持原样。');
         if (result.failed) text.textContent += ' ' + t(`${result.failed} videos were left unchanged and will be offered again.`, `另有 ${result.failed} 个视频未改动，之后会再次提示。`);
-        actions.replaceChildren(button(t('Done', '好的'), () => box.remove(), 'fv-quiet'));
+        const full = Math.min(Number.isSafeInteger(result.no_space) ? result.no_space : 0, result.failed || 0);
+        if (full > 0) text.textContent += ' ' + t(full === result.failed ? 'The disk is full. Free some space first.' : `${full} of them could not be changed because the disk is full. Free some space first.`,
+            full === result.failed ? '磁盘空间不够，请先空出空间。' : `其中 ${full} 个因磁盘空间不够，请先空出空间。`);
+        actions.replaceChildren(button(t('Got it', '知道了'), () => box.remove(), 'fv-quiet'));
     }
     if (value.state === 'running') { follow(); return; }
     heading.textContent = t('Add workflows to earlier videos', '为之前的视频补上工作流');
     text.textContent = t(`${value.count} earlier videos can get the workflow they were made with, so dropping them on the canvas restores it. Nothing changes until you confirm, and each original is kept as a backup (about ${gb(value.bytes)} GB).`,
-        `有 ${value.count} 个之前生成的视频可以补上生成时的工作流，补写后拖到画布即可还原。确认前不会改动任何文件，每个原视频都会保留一份备份（约 ${gb(value.bytes)} GB）。`);
+        `有 ${value.count} 个之前生成的视频可以补上生成时的工作流，补写后拖到画布可还原。确认前不会改动任何文件，每个原视频都会保留一份备份（约 ${gb(value.bytes)} GB）。`);
     const run = button(t('Add workflows', '补写工作流'), async () => {
         run.disabled = later.disabled = true;
         try { if (!(await post('run')).ok) throw new Error(); follow(); }
@@ -193,6 +196,8 @@ export function openLibrary(t, {upscale = null, selectedWork = null, extend = nu
     const grid = el('div', null, 'fv-library-grid');
     const message = el('p', '', 'fv-library-message'); message.setAttribute('role', 'status');
     const more = button(t('Show more', '加载更多'), () => load(true), 'fv-quiet'); more.hidden = true;
+    // Creations whose saved record could not be read stay on disk; say how many the loaded pages skipped.
+    const unreadable = el('p', '', 'fv-library-skipped fv-library-unreadable'); let unread = 0;
     // Selecting several creations: a strip above the cards, the delete bar below them.
     const picking = el('div', null, 'fv-library-picking'); picking.hidden = true;
     const pickAll = button(t('Select all', '全选'), () => selectAll(), 'fv-quiet');
@@ -207,7 +212,7 @@ export function openLibrary(t, {upscale = null, selectedWork = null, extend = nu
     bar.append(barLabel, barText, barActions);
     // The undo note and the delete bar share one sticky dock so they stack instead of covering each other.
     const dock = el('div', null, 'fv-library-dock'); dock.append(undoBar, bar);
-    collection.append(picking, grid, message, more, dock);
+    collection.append(picking, grid, message, more, unreadable, dock);
     workflowBackfill(collection, t);
     const detail = el('section', null, 'fv-library-detail');
     const all = button(t('All creations', '全部作品'), () => {
@@ -661,7 +666,9 @@ export function openLibrary(t, {upscale = null, selectedWork = null, extend = nu
         message.textContent = rows.size ? '' : t('Loading your creations…', '正在读取作品…');
         try {
             const data = await libraryPage(t, {before: appendPage ? next : null, signal: abort.signal}); if (disposed) return;
-            if (!appendPage) { thumbnails.disconnect(); grid.replaceChildren(); cards.clear(); rows.clear(); }
+            if (!appendPage) { thumbnails.disconnect(); grid.replaceChildren(); cards.clear(); rows.clear(); unread = 0; }
+            unread += Number.isSafeInteger(data.unreadable) && data.unreadable > 0 ? data.unreadable : 0;
+            unreadable.textContent = unread ? t(`${unread} ${unread === 1 ? 'creation' : 'creations'} could not be read`, `另有 ${unread}\u00a0个作品无法读取`) : '';
             for (const row of data.items || []) append(row);
             for (const row of arrivals) append(row, true);
             next = data.next; more.hidden = !next;

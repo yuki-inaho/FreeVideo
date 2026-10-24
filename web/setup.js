@@ -287,7 +287,7 @@ export async function openSetup() {
             : planErrors ? t("Fix the problems marked in red above, then click Detect & review again.", "上面有标红的问题，处理后请重新点“检测并预览”。")
             : ready && !planId ? t(INSTALLED_HINT.en, INSTALLED_HINT.zh)
             : !planId ? ""
-            : !accept.checked ? t("Tick the agreement above to enable Install / repair.", "勾选上方的同意选项后，即可点击“安装／修复”。") : "";
+            : !accept.checked ? t("Tick the agreement above to enable Install / repair.", "勾选上方的同意选项后，可点击“安装／修复”。") : "";
         blocked.textContent = why; blocked.hidden = !why;
     };
     // A changed setting makes a shown plan outdated: clear it rather than leave it beside a disabled button.

@@ -10,6 +10,12 @@ import torch
 
 from ..backends.mps_mlx_attention import to_mlx_many, to_torch
 
+# The first MLX call with and without a mask is compared with the fallback on this many
+# queries; each query attends independently, so the slice is exact. Measured MLX-to-Torch
+# differences on M-series Macs were 0.004-0.0098; a wrong kernel is off by far more.
+CHECK_QUERIES = 64
+TOLERANCE = .05
+
 
 def available():
     try:
@@ -22,21 +28,56 @@ def available():
 def routed(fallback, *, min_queries=256):
     """``attention`` for image-sized calls; short text segments, where the hand-over costs more, keep ``fallback``.
 
-    A call MLX cannot run goes to ``fallback`` instead of failing the picture, and so does
-    every later call of the process.
+    A call MLX cannot run, or whose first result disagrees with ``fallback``, goes to
+    ``fallback`` instead of failing or spoiling the picture, and so does every later call of
+    the process. ``failed`` keeps why, for the image report.
     """
     failed = []
+    checked = set()
 
     def run(query, key, value, attn_mask=None):
         if failed or query.shape[1] < min_queries:
             return fallback(query, key, value, attn_mask=attn_mask)
         try:
-            return attention(query, key, value, attn_mask=attn_mask)
+            out = attention(query, key, value, attn_mask=attn_mask)
+            kind = attn_mask is not None
+            if kind not in checked:
+                reason = differs(query, key, value, attn_mask, out, fallback)
+                checked.add(kind)
+                if reason:
+                    failed.append(reason)
+                    return fallback(query, key, value, attn_mask=attn_mask)
+            return out
         except Exception as error:
             failed.append(f'{type(error).__name__}: {error}'[:300])
             return fallback(query, key, value, attn_mask=attn_mask)
     run.failed = failed
     return run
+
+
+def differs(query, key, value, attn_mask, out, fallback):
+    """Why ``out`` cannot be trusted, or None when its first queries match ``fallback``."""
+    count = min(CHECK_QUERIES, query.shape[1])
+    mask = attn_mask
+    if mask is not None and mask.dim() >= 2 and mask.shape[-2] == query.shape[1]:
+        mask = mask[..., :count, :]
+    reference = fallback(query[:, :count], key, value, attn_mask=mask).float()
+    got = out[:, :count].float()
+    if not torch.isfinite(got).all():
+        # Non-finite values the fallback also gives come from the inputs, not from MLX.
+        return 'mismatch: non-finite output' if torch.isfinite(reference).all() else None
+    difference = (got - reference).abs().max().item()
+    if difference > TOLERANCE * max(1., reference.abs().max().item()):
+        return 'mismatch: max difference %.3g over %d queries' % (difference, count)
+    return None
+
+
+def summary(function):
+    """What the image report says about attention: None unless ``function`` came from routed()."""
+    failed = getattr(function, 'failed', None)
+    if failed is None:
+        return None
+    return dict(kernel='torch' if failed else 'mlx', **({'fallback_reason': failed[0]} if failed else {}))
 
 
 def attention(query, key, value, attn_mask=None):

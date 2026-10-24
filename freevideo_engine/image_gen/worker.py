@@ -152,6 +152,11 @@ def serve(pack_dir, *, device='cuda', idle_seconds=45., stream=None, output=None
                     if back_check is not None:
                         plan = dict(plan or {}, back_check=back_check)
                 result = dict(phase='result', path=value['path'], seconds=time.monotonic() - started, plan=plan)
+                try:
+                    result.update(attention_report(runner, context.redactor))
+                except Exception:
+                    # Diagnostics must not turn a saved picture into an error.
+                    pass
             except Exception as error:
                 code = classify_exception(error, stage=context.timing.stage, cancelled=inbox.cancel.is_set())
                 plan = None
@@ -165,6 +170,10 @@ def serve(pack_dir, *, device='cuda', idle_seconds=45., stream=None, output=None
                 result = dict(phase='error', code=code, stage=context.timing.stage, reloaded=reload,
                               seconds=context.timing.seconds(), stages=context.timing.snapshot(), plan=plan,
                               error=exception_details(error, context.redactor, code))
+                try:
+                    result.update(attention_report(runner, context.redactor))
+                except Exception:
+                    pass
             finally:
                 if result is not None and result.get('reloaded'):
                     # A failure inside a layer pass leaves the weights streamer part-way through it and the
@@ -190,6 +199,19 @@ def serve(pack_dir, *, device='cuda', idle_seconds=45., stream=None, output=None
         if runner is not None:
             with redirect_stdout(sys.stderr):
                 runner.close()
+
+
+def attention_report(runner, redactor=None):
+    """{'attention': ...} on Macs where MLX attention was installed (why it fell back, if it did); {} elsewhere."""
+    if runner is None:
+        return {}
+    from . import mlx_attention, qwen_dit
+    value = mlx_attention.summary(qwen_dit.attention)
+    if value is None:
+        return {}
+    if redactor is not None and 'fallback_reason' in value:
+        value['fallback_reason'] = redactor.text(value['fallback_reason'])[:300]
+    return dict(attention=value)
 
 
 def main():

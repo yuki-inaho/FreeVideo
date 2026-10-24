@@ -2,7 +2,7 @@
 // owns its document/history; this module inserts a result through its commands.
 import * as commands from './image_commands.js';
 import {orientMatrix, rasterKinds, scaleSelection} from './image_editor_engine.js';
-import {saveReport, reportIssue, showReportTip} from './report_issue.js';
+import {saveReport, reportIssue, showReportTip, focusReportTip} from './report_issue.js';
 import {issueButton} from './issue_button.js';
 import {about} from './request_assets.js';
 
@@ -106,6 +106,7 @@ export function createImageGenClient(fetchImpl = globalThis.fetch.bind(globalThi
         // Every picture generated on this machine, newest first; the engine keeps them in a folder.
         async history() { return (await post('history', {})).items || []; },
         async historyDelete(file) { return (await post('history-delete', {file})).items || []; },
+        async historyDeleteMany(files) { const answer = await post('history-delete-many', {files}); return {items: answer.items || [], failed: answer.failed || []}; },
         historyOpen: () => post('history-open', {}),
         // The prompts and sizes of a new character's five pictures (the Agent's cards use the same ones).
         castViews: async description => (await post('cast-views', {description})).views,
@@ -164,6 +165,7 @@ export function imageGenError(code, info, t) {
         device_unavailable: ['The graphics card is not available right now. Try again later.', '显卡暂时用不了，稍后再试。'],
         worker_exit: ['Image generation stopped unexpectedly. Try again.', '图像生成意外停止了，请再试一次。'],
         timeout: ['This image took too long and was stopped. Try again.', '这一张用时太长，已停止。请再试一次。'],
+        disk_full: ['Saving the image failed: the disk is full. Free some space, then generate again.', '保存图片时出错：磁盘空间不够，空出空间后再生成。'],
         cancelled: ['Image generation was cancelled.', '已取消图像生成。'],
         invalid_request: ['The image settings are invalid. Adjust them and try again.', '图片设置有误，请调整后重试。'],
         invalid_media: ['The reference image cannot be read. Choose another image.', '参考图读不出来，请换一张图。'],
@@ -237,6 +239,7 @@ export function renderImageFailure(host, {error, report_id, stage, fitted, info}
     issue.hidden = true;
     anchor.onclick = async () => {
         if (anchor.disabled) return;
+        if (focusReportTip(bar)) return;
         const restoreFocus = doc.activeElement === anchor;
         issue.hidden = true;
         anchor.disabled = true; anchor.textContent = t(...REPORT_LABELS.preparing);
@@ -462,11 +465,13 @@ export function createImageGenSession({client, prepare, apply, onChange = () => 
     async function start(request) {
         if (state.running || disposed || !request.prompt.trim() || !state.info?.installed) return;
         const current = ++epoch;
-        emit({running: true, job: null, fraction: 0, stage: '', error: '', report_id: null, waiting: '', fitted: null});
+        // A picture that is edited sends its reference images first; there is no job to report on yet.
+        emit({running: true, job: null, fraction: 0, stage: request.mode === 'edit' ? 'upload' : '', error: '', report_id: null, waiting: '', fitted: null});
         const alive = () => current === epoch && !disposed;
         try {
             const {context, images = [], mask} = await prepare(request, alive);
             if (!alive()) return;
+            if (state.stage === 'upload') emit({stage: ''});
             const withImages = images.length > 0;
             const row = await client.generate({prompt: request.prompt, width: context.width, height: context.height, images, mask});
             const {job} = row;
@@ -646,42 +651,95 @@ export function createImageGeneration({client, renderer, t, getDoc, getSelection
         summary.title = t('History', '历史'); summary.setAttribute('aria-label', summary.title);
         const list = el('div', null, 'fv-ie-menu-list');
         menu.append(summary, list);
+        // Choosing several: the ticked files, the reason each one that stayed gives, and the two-step confirm of the delete button.
+        let selecting = false, armed = null, failed = false;
+        const chosen = new Set(), stayed = new Map();
+        const reasons = {busy: t('In use', '被占用'), missing: t('Already gone', '已不存在'), invalid: t('Not deleted', '未删除')};
+        const disarm = () => { clearTimeout(armed); armed = null; };
         const draw = () => {
             list.replaceChildren();
+            if (failed) list.append(el('div', t('Could not delete this image', '无法删除这张图片'), 'fv-ie-menu-label'));
             if (!past.length) { list.append(el('div', t('No images generated yet', '还没有生成过图片'), 'fv-ie-menu-label')); return; }
             const grid = el('div', null, 'fv-ie-gen-history-grid');
             for (const item of past) {
                 const tile = el('div', null, 'fv-ie-gen-history-tile');
-                const place = button('', item.name, () => { menu.open = false; onPlace?.(item.file, item.name); }, 'fv-ie-gen-history-pick');
+                const ticked = chosen.has(item.file);
+                const place = button('', item.name, () => {
+                    if (!selecting) { menu.open = false; onPlace?.(item.file, item.name); return; }
+                    if (chosen.has(item.file)) chosen.delete(item.file); else chosen.add(item.file);
+                    stayed.delete(item.file); disarm(); draw();
+                }, 'fv-ie-gen-history-pick' + (ticked ? ' fv-ie-gen-history-ticked' : ''));
+                if (selecting) place.setAttribute('aria-pressed', String(ticked));
                 const picture = el('img'); picture.src = resolve(item.file); picture.alt = item.name; picture.loading = 'lazy';
                 place.append(picture); tile.append(place);
+                if (selecting) {
+                    tile.append(el('span', ticked ? '✓' : '', 'fv-ie-gen-history-tick' + (ticked ? ' fv-ie-gen-history-on' : '')));
+                    if (stayed.has(item.file)) tile.append(el('span', stayed.get(item.file), 'fv-ie-gen-history-why'));
+                    grid.append(tile);
+                    continue;
+                }
                 if (mode === 'edit' && getDoc().layers.length && limit() > 1) {
                     const use = button('+', t('Use as reference', '用作参考图'), () => {
                         references = addReference(references, {file: item.file, label: item.name}, limit()); menu.open = false; update();
                     }, 'fv-ie-gen-history-use');
                     use.setAttribute('aria-label', use.title); tile.append(use);
                 }
-                let armed = null;
+                let single = null;
                 const remove = button('×', t('Delete', '删除'), async () => {
-                    if (!armed) {
+                    if (!single) {
                         remove.textContent = t('Delete', '删除'); remove.classList.add('fv-ie-gen-history-confirm');
-                        armed = setTimeout(() => { armed = null; remove.textContent = '×'; remove.classList.remove('fv-ie-gen-history-confirm'); }, 3000);
+                        single = setTimeout(() => { single = null; remove.textContent = '×'; remove.classList.remove('fv-ie-gen-history-confirm'); }, 3000);
                         return;
                     }
-                    clearTimeout(armed);
-                    try { past = await client.historyDelete(item.file); } catch { return; }
+                    clearTimeout(single);
+                    try { past = await client.historyDelete(item.file); failed = false; } catch {
+                        // Read the folder again: a picture that is gone just leaves the list, one that is still there is named as kept.
+                        failed = true;
+                        try { past = await client.history(); failed = past.some(row => row.file === item.file); } catch { /* keep the list shown */ }
+                    }
                     draw();
                 }, 'fv-ie-gen-ref-remove fv-ie-gen-history-delete');
                 remove.setAttribute('aria-label', remove.title); tile.append(remove);
                 grid.append(tile);
             }
             list.append(grid);
-            if (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname))
-                list.append(button(t('Open folder', '打开文件夹'), null, () => { void client.historyOpen().catch(() => {}); }, 'fv-ie-menu-item'));
+            const foot = el('div', null, 'fv-ie-gen-history-foot');
+            if (selecting) {
+                const all = button(chosen.size === past.length ? t('Deselect all', '全不选') : t('Select all', '全选'), null, () => {
+                        if (chosen.size === past.length) chosen.clear(); else for (const row of past) chosen.add(row.file);
+                        stayed.clear(); disarm(); draw();
+                    }, 'fv-ie-button');
+                const del = button(armed ? t('Confirm delete', '确认删除') : t('Delete ' + chosen.size, '删除 ' + chosen.size + ' 张'), null, async () => {
+                        if (!chosen.size) return;
+                        if (!armed) { armed = setTimeout(() => { armed = null; draw(); }, 3000); draw(); return; }
+                        disarm();
+                        let answer;
+                        try { answer = await client.historyDeleteMany([...chosen]); } catch { answer = null; }
+                        stayed.clear(); failed = false;
+                        if (!answer) {
+                            try { past = await client.history(); } catch { /* keep the list shown */ }
+                            for (const file of chosen) if (past.some(row => row.file === file)) stayed.set(file, reasons.invalid);
+                        } else {
+                            past = answer.items;
+                            for (const row of answer.failed) if (row.reason !== 'missing') stayed.set(row.file, reasons[row.reason] || reasons.invalid);
+                        }
+                        for (const file of [...chosen]) if (!stayed.has(file)) chosen.delete(file);
+                        draw();
+                    }, 'fv-ie-button fv-ie-danger fv-ie-gen-history-delete-all' + (armed ? ' fv-ie-gen-history-confirm' : '') + (chosen.size ? '' : ' fv-ie-gen-history-idle'));
+                const cancel = button(t('Cancel', '取消'), null, () => { selecting = false; chosen.clear(); stayed.clear(); disarm(); draw(); }, 'fv-ie-button');
+                foot.append(all, el('span', null, 'fv-ie-gen-history-foot-end'));
+                foot.lastChild.append(cancel, del);
+            } else {
+                foot.append(button(t('Select', '选择'), null, () => { selecting = true; failed = false; draw(); }, 'fv-ie-menu-item'));
+                if (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname))
+                    foot.append(button(t('Open folder', '打开文件夹'), null, () => { void client.historyOpen().catch(() => {}); }, 'fv-ie-menu-item'));
+            }
+            list.append(foot);
         };
         menu.ontoggle = async () => {
             if (!menu.open) return;
             try { past = await client.history(); } catch { past = []; }
+            selecting = false; chosen.clear(); stayed.clear(); disarm(); failed = false;
             draw();
             // Open upward when the list does not fit below, and keep it inside the window.
             list.classList.remove('fv-ie-gen-history-up'); list.style.right = '';
@@ -735,7 +793,9 @@ export function createImageGeneration({client, renderer, t, getDoc, getSelection
                 : state.running && state.waiting ? t(...(QUEUE_LABELS[state.waiting] || QUEUE_LABELS.image))
                 : state.running && state.fitted ? t(...memoryWords([`Not enough GPU memory. Retrying at ${state.fitted.width}\u00a0×\u00a0${state.fitted.height}`,
                     `显存不足，改用 ${state.fitted.width}\u00a0×\u00a0${state.fitted.height} 重试`], state.info?.unified_memory)) + ' · ' + percent
-                : state.running ? (state.stage === 'load' ? t('Loading the model', '加载模型') + ' ' : '') + percent
+                : state.running && state.stage === 'upload' ? t('Uploading reference images', '正在上传参考图')
+                : state.running ? (state.stage === 'load' ? t('Loading the model', '加载模型') + ' '
+                    : state.stage === 'encode' ? t('Reading reference images', '读取参考图') + ' ' : '') + percent
                 : state.fitted ? fittedNote(state.fitted, t, state.info?.unified_memory) : '';
         }
         note.hidden = !note.textContent;

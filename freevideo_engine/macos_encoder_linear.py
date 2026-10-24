@@ -14,14 +14,29 @@ import types
 FULL_LINEAR_MAX_BYTES = 128 * 2**20
 LINEAR_WORKING_BYTES = 128 * 2**20
 MLP_WORKING_BYTES = 256 * 2**20
+# The limits above were sized for the 3 GiB trial pool. A larger live pool
+# scales them by the same ratio; a smaller one keeps them as they are.
+REFERENCE_POOL_BYTES = 3 * 2**30
+# Output rows of one slice never drop below this, however large the assembled
+# output is: one row per slice means one decode, fence and cache release each.
+MIN_SLICE_ROWS = 256
 
 
-def linear_plan(tokens, inputs, outputs, itemsize=4, *, packed_columns=None, packed_rows=None):
+def pool_scale(pool_bytes):
+    if pool_bytes is None:
+        return 1
+    if type(pool_bytes) is not int or pool_bytes < 1:
+        raise ValueError('Expected a positive encoder pool size')
+    return max(1, pool_bytes // REFERENCE_POOL_BYTES)
+
+
+def linear_plan(tokens, inputs, outputs, itemsize=4, *, packed_columns=None, packed_rows=None, pool=1):
     """Bound full output + decoded slab + packed/scales + slab result + bias.
 
     Packed geometry can include padding on the input axis. A result whose full
-    output alone exceeds the budget still uses one row and reports that minimum
-    explicitly; the parent MLP's token plan avoids this for the H3 workload.
+    output alone exceeds the budget still slices at least MIN_SLICE_ROWS output
+    rows (or all outputs, if fewer) and reports the over-budget estimate in
+    slice_working_bytes; minimum_slice_bytes is the theoretical one-row bound.
     """
     if min(tokens, inputs, outputs, itemsize) < 1:
         raise ValueError('Expected positive linear dimensions')
@@ -34,8 +49,9 @@ def linear_plan(tokens, inputs, outputs, itemsize=4, *, packed_columns=None, pac
     upload = 0 if packed_columns is None else columns // 2 + columns // 16 * 4
     per_row = columns * itemsize + upload + (tokens + 1) * itemsize
     scale = 4 if packed_columns is not None else 0
-    rows = min(outputs, max(1, (LINEAR_WORKING_BYTES - output - scale) // per_row))
-    full = weight + output <= FULL_LINEAR_MAX_BYTES
+    floor = min(outputs, MIN_SLICE_ROWS)
+    rows = min(outputs, max(floor, (LINEAR_WORKING_BYTES * pool - output - scale) // per_row))
+    full = weight + output <= FULL_LINEAR_MAX_BYTES * pool
     return dict(tokens=tokens, inputs=inputs, outputs=outputs, itemsize=itemsize,
                 decoded_weight_bytes=weight, output_bytes=output,
                 full_weight_output_bytes=weight + output,
@@ -44,7 +60,7 @@ def linear_plan(tokens, inputs, outputs, itemsize=4, *, packed_columns=None, pac
                 minimum_slice_bytes=output + per_row + scale)
 
 
-def mlp_plan(tokens, hidden, intermediate, itemsize=4):
+def mlp_plan(tokens, hidden, intermediate, itemsize=4, pool=1):
     """Three simultaneous intermediate arrays plus two hidden-sized row arrays.
 
     The full assembled MLP output stays live across chunks. Linear workspace is
@@ -54,8 +70,9 @@ def mlp_plan(tokens, hidden, intermediate, itemsize=4):
         raise ValueError('Expected positive MLP dimensions')
     output = tokens * hidden * itemsize
     per_row = (3 * intermediate + 2 * hidden) * itemsize
-    full = tokens * per_row <= MLP_WORKING_BYTES
-    rows = min(tokens, max(1, (MLP_WORKING_BYTES - output) // per_row))
+    budget = MLP_WORKING_BYTES * pool
+    full = tokens * per_row <= budget
+    rows = min(tokens, max(1, (budget - output) // per_row))
     return dict(tokens=tokens, hidden=hidden, intermediate=intermediate, itemsize=itemsize,
                 mode='full' if full else 'sliced', token_rows=tokens if full else rows,
                 full_activation_bytes=tokens * per_row,
@@ -121,16 +138,19 @@ class _Restore:
             setattr(self.module, self.attribute, self.original)
 
 
-def install(linears, layers, *, decoder, quantized_type, backend, guard, release, reader_stats):
+def install(linears, layers, *, decoder, quantized_type, backend, guard, release, reader_stats,
+            pool_bytes=None):
     """Select before the native forward looks up its projection/MLP callable.
 
     Below the thresholds do not assign anything: the fourth-version weight
     reader and vendor MLP function objects remain intact. MLP selection occurs
     at the parent layer because Module reads its own forward before pre-hooks.
     """
-    stats = dict(linear_sliced_calls=0, linear_slices=0, mlp_sliced_calls=0, mlp_slices=0,
-                 plans=[], full_linear_max_bytes=FULL_LINEAR_MAX_BYTES,
-                 linear_working_bytes=LINEAR_WORKING_BYTES, mlp_working_bytes=MLP_WORKING_BYTES)
+    pool = pool_scale(pool_bytes)
+    stats = dict(pool_scale=pool, linear_sliced_calls=0, linear_slices=0, mlp_sliced_calls=0, mlp_slices=0,
+                 plans=[], full_linear_max_bytes=FULL_LINEAR_MAX_BYTES * pool,
+                 linear_working_bytes=LINEAR_WORKING_BYTES * pool,
+                 mlp_working_bytes=MLP_WORKING_BYTES * pool)
     handles, seen = [], set()
 
     def record(kind, selected):
@@ -151,7 +171,8 @@ def install(linears, layers, *, decoder, quantized_type, backend, guard, release
             columns = module.weight._qdata.shape[1] * 2 if quantized else None
             selected = linear_plan(math.prod(x.shape[:-1]), module.in_features,
                                    module.out_features, x.element_size(), packed_columns=columns,
-                                   packed_rows=module.weight._qdata.shape[0] if quantized else None)
+                                   packed_rows=module.weight._qdata.shape[0] if quantized else None,
+                                   pool=pool)
             record('linear', selected)
             if selected['mode'] == 'full':
                 return None
@@ -210,7 +231,7 @@ def install(linears, layers, *, decoder, quantized_type, backend, guard, release
             nonlocal active
             x = args[0] if args else kwargs['x']
             selected = mlp_plan(math.prod(x.shape[:-1]), mlp.down_proj.out_features,
-                                mlp.down_proj.in_features, x.element_size())
+                                mlp.down_proj.in_features, x.element_size(), pool)
             record('mlp', selected)
             if selected['mode'] == 'full':
                 return None

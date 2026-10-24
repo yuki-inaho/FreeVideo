@@ -21,7 +21,7 @@ def _supported(adapters, linears, skip_modulation=False):
     for adapter in adapters:
         with open_tensors(adapter['path']) as source:
             for key in source.keys():
-                name = re.sub(r'\.(?:lora_[AB]\.weight|lora_(?:down|up)\.weight|alpha)$',
+                name = re.sub(r'\.(?:lora_(?:A|B|down|up)(?:\.weight)?|alpha)$',
                               '', key.replace('.default.', '.'))
                 for target, _, _ in _targets(name):
                     if target not in linears and '.attn.' in target:

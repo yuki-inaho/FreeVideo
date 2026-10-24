@@ -120,6 +120,7 @@
 /* The agent has the sentence and has not answered yet. */
 .fv-chat-dots{display:inline-flex;gap:5px;align-items:center;height:22px}
 .fv-chat-dots>i,.fv-chat-dots:empty::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--fv-muted);animation:fv-chat-breathe 1.4s var(--fv-ease) infinite}
+.fv-chat-thinking{display:flex;align-items:center;gap:10px;min-width:0}.fv-chat-activity{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--fv-muted);font-size:12.5px}.fv-chat-activity[hidden]{display:none}
 .fv-chat-dots>i:nth-child(2){animation-delay:.2s}.fv-chat-dots>i:nth-child(3){animation-delay:.4s}
 @keyframes fv-chat-breathe{0%,100%{opacity:.25}40%{opacity:1}}
 .fv-studio .fv-chat-down{position:absolute;right:max(40px,calc(50% - 360px));bottom:96px;width:34px;height:34px;min-height:0;padding:0;border-radius:50%;background:var(--fv-raised);box-shadow:0 6px 18px #0008}
@@ -145,6 +146,7 @@
 .fv-studio .fv-chat-send{width:36px;height:36px;min-height:0;padding:0;border:0;border-radius:9px;background:var(--fv-accent);color:var(--fv-bg)}
 .fv-studio .fv-chat-send:hover:not(:disabled){background:var(--fv-accent-hover)}
 .fv-studio .fv-chat-send:disabled{opacity:1;background:#22344a;color:#9fb3c8}
+.fv-studio .fv-chat-send.fv-chat-halt svg{fill:currentColor}
 .fv-studio .fv-chat-send:focus-visible{outline-offset:2px}
 @media(max-width:720px){
  .fv-studio .fv-chat-conversations .fv-chat-conversation-row:has(> .fv-chat-more:not([hidden])) .fv-chat-conversation{padding-right:calc(var(--fv-chats-pad) + 36px)}
@@ -170,6 +172,7 @@
 .fv-chat-delete-actions{display:flex;flex-wrap:wrap;gap:4px}
 .fv-chat-me>.fv-chat-actions{margin-top:6px;flex-wrap:wrap;justify-content:flex-end}
 .fv-chat-me .fv-chat-error{flex:1;min-width:0}
+.fv-chat-error.fv-chat-calm{color:var(--fv-muted)}
 .fv-chat-keep{white-space:nowrap}
 .fv-chat-scene-menu{box-sizing:border-box;justify-self:center;width:100%;max-width:720px;display:grid;gap:2px;padding:6px;margin-bottom:6px;border:1px solid var(--fv-border);border-radius:12px;background:var(--fv-raised)}
 .fv-chat-scene-menu[hidden]{display:none}

@@ -10,6 +10,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import math
 from pathlib import Path
 import threading
@@ -212,7 +213,12 @@ def register():
                 try: await asyncio.shield(task)
                 except (InterruptedError, OSError): pass
                 raise
-            except (ValueError, TypeError, OSError, InterruptedError):
+            except (ValueError, TypeError, OSError, InterruptedError) as error:
+                from .disk_space import ran_out
+                if ran_out(error):
+                    raise web.HTTPInsufficientStorage(text='disk_full') from None
+                if not isinstance(error, InterruptedError):
+                    logging.warning('FreeVideo sharing export failed.', exc_info=error)
                 raise web.HTTPBadRequest(text='Sharing export could not complete') from None
 
     @server.routes.get('/freevideo/share/video')

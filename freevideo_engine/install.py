@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from . import execution_paths
+from .long_paths import io_path
 from .paths import vdn_root
 from . import network, subprocess_output
 
@@ -16,8 +17,7 @@ def install(root=None, *, packages=False):
     spec = dependencies['vdn']
     root = (root or vdn_root()).expanduser().resolve()
     network.clone(root, spec['url'], spec['commit'])
-    head = subprocess_output.output_external(['git', 'rev-parse', 'HEAD'], cwd=root).strip()
-    dirty = subprocess_output.output_external(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root)
+    head, dirty = network.repository_state(root, 'git', None)
     if head != spec['commit'] or dirty:
         raise RuntimeError('Existing VDN checkout does not match the clean pinned dependency; use another --vdn-root.')
     diffusers = prepare_diffusers(root, dependencies)
@@ -76,22 +76,36 @@ def prepare_diffusers(root, dependencies):
     """Build the official two-patch tree atomically; never reset a user checkout."""
     spec = dependencies['diffusers']
     target = root / dependencies['vdn']['diffusers_subdirectory']
-    if not target.exists():
-        checkout = root / ('engine-diffusers-' + str(time.time_ns()))
-        network.clone(checkout, spec['url'], spec['base'])
-        patches = sorted((root / 'diffusers_patches').glob('*.patch'))
-        if len(patches) != 2:
-            raise RuntimeError('Expected the two pinned VDN Diffusers patches')
-        for path in patches:
-            execution_paths.run(['git', 'apply', '--index', str(path)], cwd=checkout, check=True)
-        tree = subprocess_output.output_external(['git', 'write-tree'], cwd=checkout).strip()
-        if tree != spec['patched_tree']:
-            raise RuntimeError('Patched Diffusers source tree does not match the tested dependency')
-        execution_paths.run(['git', '-c', 'user.name=VDN Engine dependency setup', '-c', 'user.email=engine@localhost',
-                        'commit', '--quiet', '-m', 'Apply pinned OpenVDN MiniMax H3 patches'], cwd=checkout, check=True)
-        checkout.rename(target)
-    tree = subprocess_output.output_external(['git', 'rev-parse', 'HEAD^{tree}'], cwd=target).strip()
-    dirty = subprocess_output.output_external(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=target)
-    if tree != spec['patched_tree'] or dirty:
-        raise RuntimeError('Existing Diffusers differs from the clean tested tree; use another VDN dependency directory.')
+    built = False
+    if not io_path(target).exists():
+        # Where the folder is too deep for Git to work in, build in a short real one.
+        scratch = network.git_scratch_folder() if network.git_folder_too_deep(root / 'engine-diffusers-0') else None
+        checkout = scratch / 'repo' if scratch else root / ('engine-diffusers-' + str(time.time_ns()))
+        try:
+            network.clone(checkout, spec['url'], spec['base'])
+            patches = sorted(io_path(root / 'diffusers_patches').glob('*.patch'))
+            if len(patches) != 2:
+                raise RuntimeError('Expected the two pinned VDN Diffusers patches')
+            for path in patches:
+                # The patch path carries the long-path prefix, which Git cannot open; pass the content instead.
+                execution_paths.run(['git', '-c', 'core.longpaths=true', 'apply', '--index', '-'],
+                                    cwd=checkout, input=path.read_bytes(), check=True)
+            tree = subprocess_output.output_external(['git', '-c', 'core.longpaths=true', 'write-tree'], cwd=checkout).strip()
+            if tree != spec['patched_tree']:
+                raise RuntimeError('Patched Diffusers source tree does not match the tested dependency')
+            execution_paths.run(['git', '-c', 'core.longpaths=true', '-c', 'user.name=VDN Engine dependency setup', '-c', 'user.email=engine@localhost',
+                            'commit', '--quiet', '-m', 'Apply pinned OpenVDN MiniMax H3 patches'], cwd=checkout, check=True)
+            if scratch:
+                partial = root / ('engine-diffusers-' + str(time.time_ns()))
+                network.relocate(checkout, partial)
+                checkout = partial
+            io_path(checkout).rename(io_path(target))
+            built = True
+        finally:
+            if scratch and scratch.exists():
+                network.remove_tree(scratch)
+    if not built:
+        tree, dirty = network.repository_state(target, 'git', None, 'HEAD^{tree}')
+        if tree != spec['patched_tree'] or dirty:
+            raise RuntimeError('Existing Diffusers differs from the clean tested tree; use another VDN dependency directory.')
     return target

@@ -52,7 +52,21 @@ GUIDE = {
     ],
     'sound': [
         'overall_soundscape: 1-4 sentences of ambience, action sounds and breaths; N/A only for silence.',
-        'non_diegetic_music: 1-3 sentences of instruments, tempo and dynamics, or N/A.',
+        'non_diegetic_music: 1-3 sentences of instruments, tempo and dynamics, or N/A. By default a long video or a '
+        'film of several shots has no music: write N/A in every shot, so each has only ambience, action sounds and '
+        'dialogue, and do not add music on your own. Whatever the case, never write a different non_diegetic_music '
+        'for each shot: the shots are generated separately, so the music would not be continuous and would jump at '
+        'every cut. Write music in a shot only when the user asks for it there.',
+        'When the user wants music over the film, keep every shot at N/A and lay one score on one sound track after '
+        'the cut is joined. If the user gives a music file, import it. If there is none, compose it yourself: write '
+        'a program that synthesizes one audio file (WAV, using the standard wave module and numpy or whatever is '
+        'already installed, nothing to install) as long as the finished cut, with its sections, changes and ending '
+        'on the cut points. Import it with POST /imports (MCP freevideo_import_media, CLI imports add), wait until it '
+        'is ready, and insert import:<id> at frame 0 of the project. There is no volume or fade operation, so build '
+        'them into the file: keep the music clearly quieter than the dialogue and ambience, lower it further while '
+        'someone speaks (take the line times from your own screenplay and shot lengths, or run a listen job in align '
+        'mode to time them), and fade it in at the start and out at the end. The audio goes onto a free sound track by '
+        'itself; read the project afterwards and check that one clip covers the whole film.',
     ],
     'references': [
         'Tags are numbered per kind in reference order: <Picture 1>, <Picture 2>, <Video 1>, <Audio 1>. '
@@ -355,6 +369,7 @@ CAPABILITIES_ZH = {
     ('POST', '/sessions/{id}/events'): '向用户发送消息或计划；操作步骤由服务端记录',
     ('POST', '/sessions/{id}/stop'): '只有页面用户可以停止工作会话',
     ('POST', '/sessions/{id}/resume'): '只有页面用户可以继续工作会话',
+    ('POST', '/sessions/{id}/stage'): '说明你正在做回答的哪个阶段；页面用自己的话显示，你开口或开始任务后自动清除',
     ('GET', '/confirmations'): '查看哪些 Agent 操作需要等待用户确认',
     ('PUT', '/confirmations'): '只有页面用户可以修改需要确认的操作',
 }
@@ -480,7 +495,7 @@ def connection_guide(root, base, lang=None, offers=None, resumed=False):
                      '连接后先调一次等待接口 GET ' + base + PREFIX + '/inbox?wait=50（MCP 用不带 id 的 freevideo_wait），'
                      '回应里的 session 就是用户现在所在的对话（用户新开或换到另一段对话时它会变，话总是发到最近一次等待给的那个 session）；往 POST ' + base + PREFIX + '/sessions/{session}/events 发 '
                      '{"type":"message","text":"…"}（MCP 用 freevideo_session_post）。在这里先只说一句话，不超过 20 个字，'
-                     '不列条目、不举例（页面上已经有例句），例如“连上了。告诉我想做什么视频。”'
+                     '不列条目、不举例（页面上已经有例句），例如“连上了。请说明想做什么视频。”'
                      '你自己窗口里的那段介绍照常说，但它不是这一轮的结尾：说完紧接着去调等待接口。'
                      '然后守在这段对话里：再调等待接口，它最多约 50 秒返回；"again": true 表示用户还没说话，'
                      '马上再调下一次，一次接一次，不限次数。没有消息不是结束的理由：不要结束这一轮回复，'
@@ -498,7 +513,7 @@ def connection_guide(root, base, lang=None, offers=None, resumed=False):
                      'without id). Its "session" is the conversation the user is in (it changes when the user opens or returns to another one; always post to the session the latest wait named); POST ' + base + PREFIX + '/sessions/{session}/events '
                      'with {"type":"message","text":"..."} (MCP: freevideo_session_post). Say only one short sentence '
                      'there first, at most 12 words, no list and no examples (the page already shows examples), for example '
-                     '"Connected. Tell me what video you want.", in the language the user writes to you in. Give the introduction in your own window as usual, but it '
+                     '"Connected. Describe the video you want.", in the language the user writes to you in. Give the introduction in your own window as usual, but it '
                      'does not end your turn: right after it, call the wait. Then stay in this conversation: call the wait again; it answers within about 50 seconds, and '
                      '"again": true means the user has not spoken yet, so call it again at once, time after time, with no '
                      'limit. Nothing new is not a reason to finish: do not end your reply and do not stop to ask the '
@@ -515,7 +530,7 @@ def connection_guide(root, base, lang=None, offers=None, resumed=False):
                      'Stop only when the user clearly tells you to.',
         rules=RULES_ZH if zh else RULES,
         fallback='如果你无法执行命令、读取本地文件或连接到这台电脑，请如实告诉用户：'
-                 '“我连接不到你电脑上的 FreeVideo，请改用安装在这台电脑上的 AI 助手。”'
+                 '“连接不到您电脑上的 FreeVideo，请改用安装在这台电脑上的 AI 助手。”'
                  '用中文说明；如果用户改用其他语言，就跟随用户。不要另装程序来绕过这个限制。' if zh else
                  'If you cannot run commands, read local files, or reach this computer, tell the user honestly '
                  'in their language: I cannot connect to FreeVideo on your computer; please use an AI assistant '

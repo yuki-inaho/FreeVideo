@@ -33,10 +33,29 @@ export function viewChanged(view, node) {
     refreshNavigation();
 }
 
-// Whether this FreeVideo has the Agent interface on. The surfaces that open first (the toolbar, the studio) ask
-// and tell it here; a view switch shows its fourth tab only once the answer is yes.
-export function agentTabReady(answer) {
-    agentTab = Promise.resolve(answer).then(on => on === true, () => false);
+// Whether this FreeVideo has the Agent interface on: 'on', 'off' or 'unknown' (true and false read as on and off).
+// The surfaces that open first (the toolbar, the studio) ask and tell it here. The fourth tab hides only when the
+// interface is off; a check that failed leaves it in place and asks again, waiting longer each time.
+let agentState = null, agentRun = null;
+const agentTabs = new Set();
+const asState = on => on === true || on === 'on' ? 'on' : on === false || on === 'off' ? 'off' : 'unknown';
+// On the Autopilot page itself the tab always shows.
+function showAgentTab(button, state = agentState) {
+    if (!button.dataset.here) button.hidden = state === 'off';
+    if (state === 'on') button.dataset.fvGuide = 'agent'; else delete button.dataset.fvGuide;
+}
+function settleAgentTab(state, recheck, run, tries) {
+    if (run !== agentRun) return;
+    agentState = state;
+    for (const ref of agentTabs) { const button = ref.deref(); if (button) showAgentTab(button); else agentTabs.delete(ref); }
+    if (state !== 'unknown' || !recheck || tries >= 6) return;
+    setTimeout(() => {
+        if (run === agentRun) Promise.resolve().then(recheck).then(asState, () => 'unknown').then(next => settleAgentTab(next, recheck, run, tries + 1));
+    }, 2000 * 2 ** tries);
+}
+export function agentTabReady(answer, recheck = null) {
+    const run = agentRun = {};
+    agentTab = Promise.resolve(answer).then(asState, () => 'unknown').then(state => { settleAgentTab(state, recheck, run, 0); return state; });
     return agentTab;
 }
 
@@ -60,8 +79,9 @@ export function viewSwitch(view, onStudio, onNodes, onEditor, onAutopilot) {
         button.setAttribute('aria-pressed', String(view === id)); button.onclick = action;
         if (id === 'autopilot') {
             button.hidden = view !== id;
+            if (view === id) button.dataset.here = 'true';
             // Settled once the tab is shown or known to stay away; the first-run guide waits for it.
-            group.ready = (agentTab || Promise.resolve(false)).then(on => { if (on) { button.hidden = false; button.dataset.fvGuide = 'agent'; } });
+            group.ready = (agentTab || Promise.resolve('off')).then(state => { agentTabs.add(new WeakRef(button)); showAgentTab(button, agentState ?? state); });
         }
         group.append(button);
     }
@@ -99,9 +119,9 @@ export function openCreativeWorkspace() {
     return true;
 }
 
-export function installNavigation(openStudio, agent = false, {openWorkflow = null} = {}) {
+export function installNavigation(openStudio, agent = false, {openWorkflow = null, recheck = null} = {}) {
     open = openStudio;
-    if (!toolbar) agentTabReady(agent);
+    if (!toolbar) agentTabReady(agent, recheck);
     if (toolbar) { refreshNavigation(); return; }
     toolbar = document.createElement('aside'); toolbar.className = 'fv-view-navigation';
     toolbar.setAttribute('aria-label', t('FreeVideo workspace', 'FreeVideo 工作区'));
@@ -139,7 +159,7 @@ export function installNavigation(openStudio, agent = false, {openWorkflow = nul
     settings.textContent = t('Settings', '设置'); settings.className = 'fv-view-settings'; settings.onclick = openSetup;
     row.append(grip, brand, viewSwitch('nodes', () => choose(node => { open?.(node); }, true), () => {}, () => choose(async (node, created) => {
         const handle = await openEditorView(node);
-        if (created) handle?.notify(t('Created an editing project for you.', '已为你新建一个剪辑工程'));
+        if (created) handle?.notify(t('Created an editing project for you.', '已新建一个剪辑工程'));
         return handle;
     }, true), () => choose(node => openAutopilot(node), true)), createLanAccess(t, api).element, createVersionInfo(cn).element, feedbackButton(t, 'fv-view-settings'), settings); toolbar.append(row);
     toolbar.append(createUpdateNotice(cn).element);

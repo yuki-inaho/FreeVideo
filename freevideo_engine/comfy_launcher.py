@@ -694,9 +694,10 @@ class Launcher:
 
     def report_error(self):
         if self.error_text:
-            from .launcher_issue import issue_url
+            from .launcher_issue import environment_line, issue_url, product_version
             from .windows_ux import open_browser
-            open_browser(issue_url(self.error_text, __version__, None, zh=self.zh))
+            version = product_version(__version__)
+            open_browser(issue_url(self.error_text, version, None, zh=self.zh, environment=environment_line(version)))
 
     def show_details(self):
         dialog = self.tk.Toplevel(self.window); dialog.title(self.t('FreeVideo · Details', 'FreeVideo · 详情'))

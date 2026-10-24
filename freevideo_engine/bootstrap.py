@@ -31,7 +31,7 @@ from .install_tuning import build_parallelism, required_models, cache_compatible
 from .terminal_ui import TerminalUI, LogProgress
 from .locking import runtime_lock, LOCK_ENV
 from .environments import (ENVIRONMENTS, environment_names, select_layout, role_pythons, constraints_file,
-                           bootstrap_versions, uv_file_arguments)
+                           bootstrap_versions, uv_file_arguments, uv_build_environment)
 from . import disk_space
 from . import network
 from . import processes
@@ -86,6 +86,13 @@ def setup_memory_status(row, verbose=False, *, system=None):
     return result
 
 
+# Windows setup downloads and unpacks prebuilt wheels: a real install peaked
+# near 0.93 GiB of tree private working set. The planned budget is the memory
+# free when planning minus the 2 GiB reserve, so on a machine with 2 GiB or
+# less free it was 0 and the first sample stopped the install.
+WINDOWS_SETUP_MIN_PROCESS_BUDGET = 2 * GiB
+
+
 def setup_memory_pressure(row, budget, system):
     """Keep Windows planning headroom separate from an exhaustion stop.
 
@@ -94,9 +101,18 @@ def setup_memory_pressure(row, budget, system):
     that same threshold prevented the low-memory path from continuing.
     Linux uses inference's clean-file-cache headroom, retaining the 1 GiB
     floor and the separate process budget. Raw cgroup charges remain recorded.
+    On Windows the process budget never falls below what setup itself needs;
+    a machine with little free RAM is stopped by the commit and system floors
+    when it truly runs out, not by a budget that was planned as zero.
     """
+    planned_budget = budget
+    raised = system == 'Windows' and budget < WINDOWS_SETUP_MIN_PROCESS_BUDGET
+    if raised:
+        budget = WINDOWS_SETUP_MIN_PROCESS_BUDGET
     reserve = (2 if system == 'Windows' else 1) * GiB
-    floor = min(256 * 2**20, int(budget * .05)) if system == 'Windows' else reserve
+    # A raised budget keeps the full 256 MiB stop point: 5% of the raised
+    # budget would stop a machine with little free RAM later than any other.
+    floor = (256 * 2**20 if raised else min(256 * 2**20, int(budget * .05))) if system == 'Windows' else reserve
     available = (inference_headroom(row) if system == 'Linux'
                  else row.get('effective_available_bytes', row['system_available_bytes']))
     commit = row.get('system_commit_available_bytes')
@@ -108,7 +124,7 @@ def setup_memory_pressure(row, budget, system):
         reasons.append('system_headroom')
     if used is not None and used > budget:
         reasons.append('process_budget')
-    return dict(reasons=reasons, working_bytes=used, budget_bytes=budget,
+    return dict(reasons=reasons, working_bytes=used, budget_bytes=budget, planned_budget_bytes=planned_budget,
                 guard_metric=row.get('guard_metric', 'process working memory'),
                 available_bytes=available, physical_available_bytes=row.get('system_physical_available_bytes'),
                 commit_available_bytes=commit, emergency_floor_bytes=floor,
@@ -124,8 +140,14 @@ def setup_memory_failure(pressure):
         detail = 'Installation paused: system RAM is nearly exhausted (%.2f GiB available; %.2f GiB minimum).' % (
             pressure['available_bytes'] / GiB, pressure['emergency_floor_bytes'] / GiB)
     else:
-        detail = 'Installation crossed its RAM budget (%.2f GiB used; %.2f GiB budget; %s).' % (
-            pressure['working_bytes'] / GiB, pressure['budget_bytes'] / GiB, pressure['guard_metric'])
+        # The budget is the memory free at planning minus the reserve, and setup itself
+        # peaked near 1 GiB; so the free memory needed is the reserve plus that, rounded up to
+        # the next half GiB above it, which leaves some room.
+        needed = (pressure.get('planning_reserve_bytes') or 0) + max(pressure['working_bytes'], GiB)
+        detail = ('Installation crossed its RAM budget (%.2f GiB used; %.2f GiB budget; %s). '
+                  'At least %.1f GiB of RAM must be free when it starts.') % (
+            pressure['working_bytes'] / GiB, pressure['budget_bytes'] / GiB, pressure['guard_metric'],
+            (needed * 2 // GiB + 1) / 2)
     return detail + ' Downloaded files are retained.'
 
 
@@ -279,16 +301,46 @@ def digest(path, algorithm='sha256', git_blob=False):
 
 
 def inventory(gpu=None):
-    smi = nvidia_smi()
     query = 'index,uuid,name,compute_cap,memory.total,memory.free,driver_version,pci.bus_id'
-    result = subprocess_output.run_external([smi, '--query-gpu=' + query, '--format=csv,noheader,nounits'],
-                            check=True, capture_output=True, timeout=20)
-    rows = [dict(zip(query.split(','), map(str.strip, row))) for row in csv.reader(result.stdout.splitlines())]
     selector = gpu if gpu is not None else os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')[0]
-    matches = [r for r in rows if r['index'] == selector or r['uuid'] == selector]
-    if len(matches) != 1:
-        raise ValueError('Select one physical GPU by nvidia-smi index or full UUID with --gpu. MIG is not supported.')
-    selected = matches[0]
+    detection = {}
+    try:
+        smi = nvidia_smi()
+        result = subprocess_output.run_external([smi, '--query-gpu=' + query, '--format=csv,noheader,nounits'],
+                                check=True, capture_output=True, timeout=20)
+        rows = [dict(zip(query.split(','), map(str.strip, row))) for row in csv.reader(result.stdout.splitlines())]
+        if not rows or any(set(row) != set(query.split(',')) for row in rows):
+            raise ValueError('nvidia-smi returned an incomplete GPU inventory')
+        # Unsupported numeric fields are also a failed observation, not proof
+        # that the user has no GPU. Only the selected row has to be readable;
+        # another GPU reporting N/A must not block an installation that worked.
+        matches = [r for r in rows if r['index'] == selector or r['uuid'] == selector]
+        if len(matches) == 1:
+            row = matches[0]
+            float(row['memory.total']), float(row['memory.free'])
+            int(row['driver_version'].split('.')[0])
+            capability = tuple(map(int, row['compute_cap'].split('.')))
+            if len(capability) != 2 or capability[0] <= 0 or not 0 <= capability[1] <= 9:
+                raise ValueError('nvidia-smi returned an unknown compute capability: ' + row['compute_cap'])
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        from . import cuda_inventory
+        try:
+            fallback = cuda_inventory.probe(selector)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as fallback_error:
+            raise RuntimeError('GPU detection failed. nvidia-smi: %s; CUDA: %s. '
+                               'Check device access and the NVIDIA driver, then retry setup.' %
+                               (error, fallback_error)) from fallback_error
+        selected, rows = fallback['selected_gpu'], fallback['gpus']
+        detection = dict(cuda_driver_api_version=fallback['cuda_driver_api_version'],
+            warnings=[cuda_inventory.WARNING],
+            gpu_detection=dict(source='cuda-driver', nvidia_smi_error=str(error),
+                nvidia_smi_returncode=getattr(error, 'returncode', None),
+                nvidia_smi_stderr=getattr(error, 'stderr', None)))
+        logging.getLogger(__name__).info('%s nvidia-smi: %s', cuda_inventory.WARNING, error)
+    else:
+        if len(matches) != 1:
+            raise ValueError('Select one physical GPU by nvidia-smi index or full UUID with --gpu. MIG is not supported.')
+        selected = matches[0]
     try:
         capability = tuple(map(int, selected['compute_cap'].split('.')))
         if len(capability) != 2:
@@ -310,7 +362,7 @@ def inventory(gpu=None):
             'swap_free_bytes': ram.get('swap_free_bytes'), 'system_memory': ram,
             'compiler': shutil.which('cl' if platform.system() == 'Windows' else 'g++'), 'git': usable_git(),
             **({} if platform.system() == 'Windows' else {'make': shutil.which('make')}),
-            'git_found': shutil.which('git')}
+            'git_found': shutil.which('git'), **detection}
 
 
 # Windows reuses a detected Git from 2.35, the oldest tested there, and
@@ -500,6 +552,7 @@ def plan(args, *, local_progress=None, stage=None):
         if not args.hardware_json and (platform.system() not in ('Linux', 'Windows') or platform.machine().lower() not in ('x86_64', 'amd64')):
             raise RuntimeError('One-click setup supports Linux x86_64 and native Windows x64.')
         snapshot = json.loads(args.hardware_json.read_text(encoding='utf-8')) if args.hardware_json else inventory(args.gpu)
+        warnings.extend(snapshot.get('warnings', []))
         hardware = Hardware.from_dict(snapshot['hardware'])
         errors = []
         if snapshot.get('machine', '').lower() not in ('x86_64', 'amd64') or hardware.system not in ('Linux', 'Windows'):
@@ -509,9 +562,16 @@ def plan(args, *, local_progress=None, stage=None):
             errors.append('Native Windows uses the unified environment. Rerun with --environment unified.')
             layout = 'unified'
         if windows_target and getattr(args, 'rebuild_sage', False):
-            errors.append('Windows uses the Sage2 wheel FreeVideo tests; --rebuild-sage is a Linux source-build option.')
-        if int(snapshot['selected_gpu']['driver_version'].split('.')[0]) < 580:
-            errors.append('NVIDIA driver 580 or newer is required by the CUDA 13 encoder FreeVideo tests; update the driver first.')
+            errors.append('Windows uses the tested Sage2 wheel; --rebuild-sage is a Linux source-build option.')
+        driver = str(snapshot['selected_gpu']['driver_version']).strip()
+        # An unreadable version is left to the later checks instead of blocking setup.
+        major = re.match(r'\d+', driver)
+        cuda_api = snapshot.get('cuda_driver_api_version')
+        if cuda_api < 13000 if cuda_api is not None else (major and int(major.group()) < 580):
+            # The card names the graphics card too; brackets would end its pattern early.
+            model = re.sub(r'[()\r\n]', '', str(snapshot['selected_gpu'].get('name') or '')).strip()
+            errors.append('NVIDIA driver %s%s is older than 580, the minimum for the CUDA 13 encoder; update the driver first.'
+                          % (driver, ' (%s)' % model if model else ''))
         compatibility = hardware.cuda_compatibility()
         if compatibility['error']:
             errors.append(compatibility['error'])
@@ -600,6 +660,15 @@ def plan(args, *, local_progress=None, stage=None):
         approved = getattr(args, 'approved_plan', None)
         if approved:
             previous_reuse = json.loads(Path(approved).read_text(encoding='utf-8')).get('local_models')
+        scan_cache = root / 'local-model-scan.json'
+        if not previous_reuse and scan_cache.is_file():
+            # What an earlier check hashed; scan() still hashes any file whose size, times or inode changed.
+            try:
+                previous_reuse = json.loads(scan_cache.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                previous_reuse = None
+            if not (isinstance(previous_reuse, dict) and isinstance(previous_reuse.get('matches'), dict)):
+                previous_reuse = None
         needed = [row for row in files if not model_target(row, model_dir, encoder_dir, prepared_dir).exists()]
         if local_manifest:
             if Path(local_manifest).stat().st_size > 512 * 1024:
@@ -627,6 +696,11 @@ def plan(args, *, local_progress=None, stage=None):
             if error.__cause__ is not None:
                 original += '\n' + str(error.__cause__)
             raise DownloadListError('read', original_error=original) from error
+        if local_reuse['matches'] and root.is_dir():
+            try:
+                save(scan_cache, dict(root=local_reuse['root'], matches=local_reuse['matches']))
+            except OSError:
+                pass  # The next check hashes again; nothing depends on this file.
         local_reuse['copy_mode'] = bool(getattr(args, 'copy_existing_models', False))
         local_reuse['copy_bytes'] = local_reuse['linked_bytes'] = 0
         for row in needed:
@@ -645,6 +719,16 @@ def plan(args, *, local_progress=None, stage=None):
     check_download_list = bool(getattr(args, 'download_list', False))
     stamps_path = root / 'verified-models.json'
     stamps = json.loads(stamps_path.read_text(encoding='utf-8')) if check_download_list and stamps_path.is_file() else {}
+    # The check leaves the installer's ledger alone and keeps what it hashed in a file of its own.
+    checked_path = root / 'download-list-checks.json'
+    try:
+        checked = json.loads(checked_path.read_text(encoding='utf-8')) if check_download_list and checked_path.is_file() else {}
+    except (OSError, ValueError):
+        checked = {}
+    ledger_stamps = dict(stamps)
+    # A record this check made is newer than the ledger's for the same file whenever the two differ.
+    stamps = dict(ledger_stamps, **(checked if isinstance(checked, dict) else {}))
+    checked_paths = set()
     for row in files:
         path = model_target(row, model_dir, encoder_dir, prepared_dir)
         replacement = model_repair.replacement(path, row, mismatches, reserved)
@@ -657,6 +741,7 @@ def plan(args, *, local_progress=None, stage=None):
             from .provision import verified
             hf_directory = Path(prepared_dir) if row.get('prepared') else model_dir if row['repo'].startswith('OpenVDN/') else encoder_dir
             size_matches = verified(path, row, stamps, mode=getattr(args, 'verify', 'auto'), hf_directory=hf_directory)
+            checked_paths.add(str(path))
         present += row['bytes'] if size_matches else 0
         device = existing_parent(path.parent)
         entry = groups.setdefault(str(device), {'path': str(device), 'needed_bytes': 0,
@@ -669,6 +754,12 @@ def plan(args, *, local_progress=None, stage=None):
             # Only the streaming strategy can reuse this contiguous prefix.
             # Its completed content must still pass the pinned hash check.
             entry['resume_bytes'] = entry.get('resume_bytes', 0) + partial.stat().st_size
+    remembered = {name: value for name, value in stamps.items() if name in checked_paths and ledger_stamps.get(name) != value}
+    if check_download_list and root.is_dir() and remembered != checked:
+        try:
+            save(checked_path, remembered)  # The next check does not hash these files again unless they change.
+        except OSError:
+            pass
     # Stream directly into final FP8 groups. The pinned model occupies ~45.3
     # GiB; allow 52 GiB including the largest group in progress. Never credit
     # future source deletion toward the space needed to complete conversion.
@@ -783,9 +874,9 @@ def plan(args, *, local_progress=None, stage=None):
             'first_generation_note': 'Portable AdaLN tables follow model weights and the exact schedule, across GPUs and Torch/CUDA versions. New schedules or modulation-changing LoRAs require preparation. Existing environments stay on disk when switching.',
             'estimates_are_not_capacity_guarantees': True, 'errors': errors, 'warnings': warnings,
             'steps': ['Install isolated uv/Python and ' + ('one shared CUDA environment' if layout == 'unified' else 'two CUDA environments'),
-                      'Clone the VDN, patched Diffusers and native H3 text-encoder library versions FreeVideo tests',
+                      'Clone the tested versions of VDN, patched Diffusers and the native H3 text-encoder library',
                       'Install verified Windows Triton / Sage2 wheels' if windows_target else 'Install a local CUDA compiler and build Sage2 for the detected GPU only',
-                      'Download and verify the base, eight-step checkpoint and encoder weights FreeVideo tests',
+                      'Download and verify the tested base, eight-step checkpoint and encoder weights',
                       'Prepare or verify the architecture-compatible FP8 cache',
                       'Execute small attention/linear kernel probes and save machine configuration'],
             'licenses': ['https://huggingface.co/OpenVDN/vdn-minimax-h3/blob/751739ee5b9e3ac802dca5d5111075fdaeb47885/LICENSE',
@@ -1009,6 +1100,7 @@ def download(url, path, sha, progress=None, *, networking=None, env=None):
 
 
 def unpack(archive, destination):
+    from .long_paths import io_path
     destination.mkdir(parents=True, exist_ok=True)
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as zipped:
@@ -1018,7 +1110,7 @@ def unpack(archive, destination):
                 if (not path.is_relative_to(destination.resolve()) or ':' in name or
                         (member.external_attr >> 16) & 0o170000 == 0o120000):
                     raise ValueError('Unsafe ZIP member: ' + member.filename)
-            zipped.extractall(destination)
+            zipped.extractall(io_path(destination))
         return
     with tarfile.open(archive) as tar:
         # Python 3.9-compatible containment checks, including link targets.
@@ -1030,7 +1122,7 @@ def unpack(archive, destination):
                 target = (path.parent if member.issym() else destination) / member.linkname
                 if not target.resolve().is_relative_to(destination.resolve()):
                     raise ValueError('Unsafe archive link: ' + member.name)
-        tar.extractall(destination)
+        tar.extractall(io_path(destination))
 
 
 def unpack_folder(archive, destination, name):
@@ -1390,6 +1482,7 @@ class Installer:
         env = temporary_environment(self.root, env or self.env)
         env = dict(env, FREEVIDEO_INSTALL_PROGRESS='1')
         args, cwd = uv_file_arguments(args, cwd)
+        env = uv_build_environment(args, self.root, env)
         with self.state_lock:
             index = len(self.state['steps'])
             log = self.run_dir / ('%02d-%s.log' % (index, label))
@@ -1458,6 +1551,12 @@ class Installer:
             row['error'] = repr(error)
             if child is not None and child.poll() is None:
                 processes.stop(child)
+            # A step stopped from outside leaves nothing else in its log to explain why.
+            try:
+                with log.open('a', encoding='utf-8') as stream:
+                    stream.write('\nStopped: %s\n' % error)
+            except OSError:
+                pass
             raise
         finally:
             update_progress(final=True)
@@ -2236,15 +2335,15 @@ def run_main(argv, shown):
                         help='With --prepared-format: download and verify that model beside the installed one, which stays '
                              'in use. No other setup step runs and machine.json is unchanged')
     parser.add_argument('--model-source', choices=('prepared', 'source'), default='prepared',
-                        help='Default: download a slim model FreeVideo tests matching the GPU format. source: explicitly download original weights and convert locally')
+                        help='Default: download the tested slim model matching the GPU format. source: explicitly download original weights and convert locally')
     parser.add_argument('--encoder-models', type=Path, help='Directory containing text_encoders/')
-    parser.add_argument('--reuse-models', type=Path, help='Scan an existing model library, verify content against the version FreeVideo tests and import matching files; only missing models are downloaded')
+    parser.add_argument('--reuse-models', type=Path, help='Scan an existing model library, verify content against the tested version and import matching files; only missing models are downloaded')
     parser.add_argument('--reuse-models-manifest', type=Path, help='Versioned JSON containing model library roots, including ComfyUI extra model paths')
     parser.add_argument('--copy-existing-models', action='store_true', help='Copy verified local models instead of using same-disk hardlinks; source files are kept')
     parser.add_argument('--allow-model-restart', action='store_true', help='Permit a fresh download when an incomplete model cannot resume; retains old data and may use extra download/disk space')
     cache_options = parser.add_mutually_exclusive_group()
     cache_options.add_argument('--cache', type=Path, help='Verify and reuse an existing FP8 cache')
-    cache_options.add_argument('--rebuild-cache', action='store_true', help='Recreate FP8 from the source weights FreeVideo tests, downloading missing sources; preserve failed caches')
+    cache_options.add_argument('--rebuild-cache', action='store_true', help='Recreate FP8 from the tested source weights, downloading missing sources; preserve failed caches')
     parser.add_argument('--storage', choices=('compact', 'retain'), help='Default compact: stream FP8 and remove installer-owned conversion sources after verification; retain keeps sources for re-quantization')
     parser.add_argument('--frontend-root', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--frontend-separate', action='store_true', help=argparse.SUPPRESS)

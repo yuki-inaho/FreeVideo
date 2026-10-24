@@ -12,13 +12,18 @@ export function connectionSentence(address, t) {
     return t(`Connect to FreeVideo: open ${url} and follow the instructions.`, `请连接 FreeVideo：打开 ${url} 并按说明操作。`);
 }
 
-// Whether this FreeVideo has the Agent interface on. Any failure counts as off: the surface shows nothing.
-export async function agentInterfaceEnabled(api) {
+// Whether this FreeVideo has the Agent interface on: 'on', 'off' or 'unknown'. Only an explicit `enabled: false`
+// is off; a check that failed (no answer, an error status, an unreadable reply) is not an answer.
+export async function agentInterfaceState(api) {
     try {
         const response = await api.fetchApi('/freevideo/agent', {cache: 'no-store'});
-        return response.ok && (await response.json()).enabled === true;
-    } catch { return false; }
+        if (!response.ok) return 'unknown';
+        const enabled = (await response.json())?.enabled;
+        return enabled === true ? 'on' : enabled === false ? 'off' : 'unknown';
+    } catch { return 'unknown'; }
 }
+
+export async function agentInterfaceEnabled(api) { return await agentInterfaceState(api) === 'on'; }
 
 const ICONS = {plug: ['M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0V7zM12 16v5', 1.8], copy: ['M11 9h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zM5 15V5a2 2 0 0 1 2-2h8', 2]};
 function icon(name) {
@@ -32,7 +37,9 @@ function icon(name) {
 // The card alone: who can connect and one button that copies the sentence to paste to the agent. The sentence
 // stays out of sight; it shows, selected, only when the browser refuses the clipboard. shown() says whether the
 // user can see the card now; the surface calls sync() whenever that may have changed.
-export function agentConnectCard(t, api, shown = () => true) {
+// A failed check leaves the card up, so its own retry is the way back; an address that loads then asks again and
+// reports the answer to changed().
+export function agentConnectCard(t, api, shown = () => true, changed = () => {}) {
     const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = new URL('./agent_connect.css', import.meta.url).href; document.head.append(css);
     const body = el('section', 'fv-agent-connect-body');
     const mark = el('span', 'fv-agent-connect-icon'); mark.append(icon('plug'));
@@ -94,6 +101,7 @@ export function agentConnectCard(t, api, shown = () => true) {
             if (!connect?.address) throw new Error('Missing address');
             text = connectionSentence(connect.address, t);
             failures = 0; render();
+            if (await state === 'unknown') { state = agentInterfaceState(api); changed(await state); }
         } catch { if (current === generation) { failures++; render(); } }
         finally {
             if (current === generation) {
@@ -106,7 +114,8 @@ export function agentConnectCard(t, api, shown = () => true) {
         if (!active()) { stop(); return; }
         if (!text && failures < 3 && !controller && !timer) load();
     }
-    // Resolves to whether this FreeVideo has the Agent interface on; a surface shows nothing when it is off.
-    const enabled = agentInterfaceEnabled(api);
-    return {element: body, enabled, sync, stop};
+    // `state` is the first answer; `enabled` resolves to whether it is on.
+    let state = agentInterfaceState(api);
+    const first = state, enabled = first.then(value => value === 'on');
+    return {element: body, state: first, enabled, sync, stop};
 }

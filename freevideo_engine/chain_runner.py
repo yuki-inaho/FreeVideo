@@ -195,7 +195,25 @@ class ChainRunner:
             value['mine'] = record['client_id'] == client_id
         if record['state'] in store.ACTIVE and block is not None:
             value['current'] = block['id']
+        waiting = self._waiting(record)
+        if waiting is not None:
+            value['waiting'] = waiting
         return value
+
+    def _waiting(self, record):
+        """What a chain that has not started waits for: how many chains are ahead and, for a single
+        one, the time it has left (None while that is unknown)."""
+        if record['state'] != 'queued' or record['id'] == self.active or record['id'] not in self.queue:
+            return None
+        ahead = [] if self.active is None else [self.active]
+        for identity in self.queue[:self.queue.index(record['id'])]:
+            row = self.records.get(identity)
+            if row is not None and row['state'] == 'queued' and identity not in ahead:
+                ahead.append(identity)
+        if not ahead:
+            return None
+        remaining = _number(self.progress_values.get(ahead[0], {}).get('remaining_seconds')) if len(ahead) == 1 and ahead[0] == self.active else None
+        return {'ahead': len(ahead), 'remaining_seconds': None if remaining is None or remaining < 0 else remaining}
 
     def _depths(self, record, seen=()):
         """Parts each block of `record` continues through, itself included (a block with no source is the

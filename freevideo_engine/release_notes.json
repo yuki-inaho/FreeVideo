@@ -1,31 +1,97 @@
 {
   "schema": 1,
-  "product_version": "0.4.17",
+  "product_version": "0.4.19",
   "en": {
-    "summary": "Image generation and editing come to Apple silicon Macs, a Mac update that fails to open is rolled back, and phones on the same network connect more reliably.",
+    "summary": "Several pictures can be deleted from the image history at once; prompt enhancement states the reason when it cannot finish.",
     "changes": [
-      "Mac: Macs with Apple silicon and at least 16 GB of memory can now generate and edit images.",
-      "Mac: in later updates, if the new version stops right after opening, the previous version is put back. The previous version is kept in a hidden folder so it no longer shows up in search or Launchpad. When an update fails, the reason and both buttons now appear right below the description.",
-      "Phone access: the phone page connects when phone access is switched on in the launcher, and also works on older phone browsers.",
-      "Queue: a single failed read of the queue no longer shows the connection lost card. The card appears after three failures in a row and goes away when the connection returns, and a running loop is kept through a short outage.",
-      "Launcher: when the chosen folder is not a ComfyUI folder, the launcher names a ComfyUI folder found nearby. Windows: the engine now starts when its usual port falls inside a range that Windows has reserved.",
-      "Installation: an installation with no generation on record now also compiles the standard size in the background.",
-      "Failures: when the model file changed during generation, the failure text names what changed."
+      "Install: setup no longer stops when some graphics card details cannot be read; command-line generation works on Windows when FreeVideo is installed in a very deep folder.",
+      "Image history: after Select, several pictures can be checked and deleted at once, with a second click to confirm; pictures that are in use or cannot be deleted stay in place with the reason shown.",
+      "Prompt enhancement: when enhancement cannot finish and the original prompt is used, the reason is shown; a rewrite that lacks the video or audio description is sent back to the model to add it.",
+      "Editor: Extend on a finished video without a description asks for a description first instead of showing an English validation error; when the description box is cleared, the description carried over for that segment is used.",
+      "The Linux package now includes curl, so installation and downloads work on systems without it.",
+      "Download list: the check no longer hashes every model file again each time it runs; files already hashed are skipped while their size, times and inode are unchanged.",
+      "Keeps the failed phase, step count, error type and memory readings of a GPU error that raised the compatibility level, so a diagnostic report sent after a later run still shows where it stopped.",
+      "The chat no longer shows the notice for an edited waiting message as an error with a report button; it is a plain status line."
     ]
   },
   "zh": {
-    "summary": "Apple 芯片的 Mac 可以生成和编辑图片；Mac 更新后打不开时会还原旧版；同一网络下的手机连接更稳定。",
+    "summary": "生图历史可以一次删除多张；提示词增强未能完成时写明原因。",
     "changes": [
-      "Mac：Apple 芯片、内存 16 GB 及以上的 Mac 可以生成和编辑图片。",
-      "Mac：以后的更新中，新版刚打开就停止时会自动换回旧版。旧版保存在隐藏文件夹里，不再出现在搜索和启动台中。更新失败时，失败原因和两个按钮紧跟在说明下方显示。",
-      "手机访问：在启动器中打开手机访问后，手机页面即可连接，较旧的手机浏览器也能使用。",
-      "队列：读取队列只失败一次时不再弹出“连接已断开”卡片；连续失败三次才出现，连接恢复后自动消失；短时间断线时，正在运行的循环会保留。",
-      "启动器：所选文件夹不是 ComfyUI 文件夹时，会指出附近找到的 ComfyUI 文件夹。Windows：引擎常用端口落在 Windows 保留的端口段里时，也能正常启动。",
-      "安装：没有任何生成记录的安装，后台也会预编译标准尺寸。",
-      "失败提示：生成过程中模型文件发生变化时，失败文字会写明变化的内容。"
+      "安装：部分显卡信息读不到时，安装不再中断；Windows 上 FreeVideo 安装在很深的文件夹时，命令行生成可以正常运行。",
+      "生图历史：点“选择”后可以勾选多张一次删除，删除前需要再次确认；被占用或无法删除的图片会保留并写明原因。",
+      "提示词增强：增强未能完成、改用原提示词时，写明原因；改写结果缺少视频或音频描述时，会请模型补上。",
+      "剪辑页：在没有描述的成片后“接着生成”时，会提示先写一句描述，不再显示英文校验错误；描述框被清空时，沿用这一段原有的描述。",
+      "Linux 安装包自带 curl，系统未安装 curl 时也能正常安装和下载。",
+      "下载清单：检查不再每次重新校验所有模型文件；已经校验过的文件在大小、时间和 inode 都没变时直接跳过。",
+      "保留导致兼容档位升高的显卡错误的出错阶段、步数、错误类型和内存读数，之后一次运行发送的诊断报告仍能看出它停在哪里。",
+      "对话中修改了正在等待 Agent 的消息后，提示不再按错误显示、不再带“报告问题”按钮，改为普通状态提示。"
     ]
   },
   "history": [
+    {
+      "product_version": "0.4.18",
+      "en": {
+        "summary": "FreeVideo can be installed into deeply nested folders on Windows; many failure messages state the cause and the next step; Windows computers with little free memory can complete generation; consecutive requests run faster on computers with ample memory.",
+        "changes": [
+          "Install: FreeVideo can be installed into deeply nested folders on Windows; when an update cannot be installed and the previous version is restored, the notice follows the interface language.",
+          "Launcher: errors state the step that failed and what to do next, and Report a problem includes a line about the environment; when the saved installation folder cannot be opened, Start opens the setup page with the saved paths and an explanation; a graphics driver older than 580 gets a notice with the installed version and the update steps; a damaged launcher settings file is kept as a copy before it is replaced; the launcher keeps working when the prompt model file list is missing, and that row appears once the list is available.",
+          "Model downloads: slow sources are retried with a longer time limit, and the last failure reason of each source and route is listed; when a source has problems, the launcher shows a dedicated card with a button to switch sources; the image model has its own download list with links and checksums, exported to a separate folder.",
+          "Failure messages: a failed video generation names the stage where it stopped (loading, sampling or decoding); failure feedback starts with the last error; automatic subtitles, subtitle downloads, media import and subtitle import in the editor state the reason when they fail, and GBK-encoded SRT subtitles can be imported; image generation, adding workflows and share export state when the disk is full; an unreadable queued reference image prompts for a different image; a failed part of a long video shows a short status, with details in the error card and the name of any missing file.",
+          "Generation: fixed an error when submitting a generation; when first/last frames and references cannot be combined, the failure card says which media to turn off; Generate with AI explains when the media list is full at 32 items; the estimate before generation marks first-time preparation, and a slow estimate gives a reason and a remedy; a queued request shows its wait in minutes or the number of requests ahead; a queued export shows Queued on its button; LoRA files in more naming styles are recognized, and an acceleration LoRA made for the original model gets its own explanation.",
+          "Prompt enhancement: scenes with audio, connected nodes or videos can be enhanced, with audio and connected nodes skipped and one frame read from each video; with reference images, a rewrite that leaves out an image reference is sent back to the model once to add it.",
+          "Reference images: uploading and reading show Uploading reference image and Reading reference image N%; the + button in the editor shows a spinner while loading; library import shows uploading, queued and processing in turn, and finishes once progress reaches 100%.",
+          "Autopilot: it can be stopped while waiting for a reply and shows its current action; after three minutes without a progress update it says generation is still running; a background tab title starts with Confirmation needed, Failed or Done; Edit prompt puts the summary back in the input box; the confirmation card shows the size and duration; when the entry check fails, the entry stays and the check can be retried; an unreadable saved conversation or film leaves the rest available; failure reasons are readable in the English interface.",
+          "Multi-shot films: for long videos and multi-shot films made by Autopilot, music is added on request: when requested, one continuous score is laid over the whole film after the shots are joined, and a music file from the user can be used directly.",
+          "Create and Your creations: saving or loading a prompt can be retried after a failure; key presses stay inside the creation panel; in the image editor, the History entry stays visible after a picture is placed from the history; the end of the Your creations list shows how many records cannot be read.",
+          "Memory and speed: when a Windows computer is refused only because of the default memory reserve, part of the reserve is used, keeping at least 1 GiB, so generation can start with about 5 GiB free; on computers with ample memory, consecutive requests skip reloading the models and run faster.",
+          "Mac: encoding with many reference images is much faster; accelerated computation falls back to the standard method when its results look wrong; after a one-click update, a new version that starts slowly is kept."
+        ]
+      },
+      "zh": {
+        "summary": "Windows 上可以安装到层级较深的文件夹；多处失败提示写明原因和下一步操作；可用内存较少的 Windows 电脑可以继续完成生成；内存宽裕的电脑连续生成时速度更快。",
+        "changes": [
+          "安装：Windows 上可以安装到层级较深的文件夹；更新未能装上并换回旧版时，提示按界面语言显示。",
+          "启动器：出错时写明出错的步骤和下一步操作，“报告问题”附带一行环境信息；已保存的安装文件夹无法打开时，点击“启动”会进入安装页，显示已保存的路径和说明；显卡驱动版本低于 580 时，显示当前驱动版本和更新步骤；启动设置文件损坏时，先保留一份副本再保存；提示词模型的文件清单缺失时，启动器照常工作，相应一行在清单可用后显示。",
+          "模型下载：下载源较慢时以更长的时限重试，并分别列出每个下载源和线路最近一次失败的原因；下载源出现问题时，启动器显示专门的卡片和切换下载源的按钮；图像模型有单独的下载清单，列出链接和校验值，并导出到单独的文件夹。",
+          "失败提示：视频生成失败时写明出错的阶段（载入、采样或解码）；生成失败后的反馈以最后一条错误开头；剪辑页的自动字幕、字幕下载、素材导入和字幕导入失败时写明原因，GBK 编码的 SRT 字幕可以导入；图像生成、补写工作流和分享导出遇到磁盘已满时写明原因；排队中的参考图无法读取时，提示更换图片；长视频的某一段失败时显示简短状态，详细内容在错误卡片中，并写出缺失文件的名称。",
+          "生成：修复了部分情况下提交生成时报错的问题；首尾帧与参考素材不能同时使用时，失败卡片说明原因并提示关闭哪一类素材；素材列表已满 32 项时，“AI 生成”说明原因；生成前的时间估计注明“含首次准备”，预计较慢时给出一个原因和一个处理办法；排队时显示“约 N 分钟后开始”或“前面还有 N 个”；导出排队时按钮显示“排队中”；更多命名方式的 LoRA 文件可以正确识别，为原版模型制作的加速 LoRA 会显示专门说明。",
+          "提示词增强：场景中有音频、连接节点或视频时也可以增强，音频和连接节点会被跳过，视频读取一帧画面；带参考图时，改写结果遗漏图片引用，会请模型补上一次。",
+          "参考图：上传和读取时显示“正在上传参考图”和“正在读取参考图 N%”；剪辑页的“+”按钮在加载时显示转圈；素材库导入依次显示上传中、排队中和处理中，进度到 100% 后直接完成。",
+          "AI 全自动：等待回复时可以停止，并显示当前动作；三分钟没有进度更新时，提示仍在生成中；后台标签页的标题前显示“待确认”“失败”或“已完成”；“改描述”会把摘要放回输入框；确认卡片显示尺寸和时长；入口检查失败时保留入口，可以重试；某个已保存的对话或影片无法读取时，其余内容照常可用；英文界面下的失败原因清楚可读。",
+          "多镜头作品：AI 全自动制作长视频和多镜头作品时，配乐按需添加：需要配乐时，在各镜头拼接完成后为整片铺一段连贯的配乐，用户提供的音乐文件也可以直接使用。",
+          "创作面板与我的作品：提示词保存或读取失败时可以重试；按键操作只作用于创作面板；图像编辑中从历史记录放入画布后，“历史”入口保持可见；“我的作品”列表末尾显示无法读取的记录数量。",
+          "内存与速度：Windows 电脑只因默认预留空间不足而无法开始生成时，会使用部分预留空间（至少保留 1 GiB），可用内存约 5 GiB 时也可以开始生成；连续生成多个请求时，内存宽裕的电脑无需重复加载模型，速度更快。",
+          "Mac：使用大量参考图时，编码速度明显提升；加速计算的结果异常时，自动改用标准计算；一键更新后，启动较慢的新版本同样会保留。"
+        ]
+      }
+    },
+    {
+      "product_version": "0.4.17",
+      "en": {
+        "summary": "Image generation and editing come to Apple silicon Macs, a Mac update that fails to open is rolled back, and phones on the same network connect more reliably.",
+        "changes": [
+          "Mac: Macs with Apple silicon and at least 16 GB of memory can now generate and edit images.",
+          "Mac: in later updates, if the new version stops right after opening, the previous version is put back. The previous version is kept in a hidden folder so it no longer shows up in search or Launchpad. When an update fails, the reason and both buttons now appear right below the description.",
+          "Phone access: the phone page connects when phone access is switched on in the launcher, and also works on older phone browsers.",
+          "Queue: a single failed read of the queue no longer shows the connection lost card. The card appears after three failures in a row and goes away when the connection returns, and a running loop is kept through a short outage.",
+          "Launcher: when the chosen folder is not a ComfyUI folder, the launcher names a ComfyUI folder found nearby. Windows: the engine now starts when its usual port falls inside a range that Windows has reserved.",
+          "Installation: an installation with no generation on record now also compiles the standard size in the background.",
+          "Failures: when the model file changed during generation, the failure text names what changed."
+        ]
+      },
+      "zh": {
+        "summary": "Apple 芯片的 Mac 可以生成和编辑图片；Mac 更新后打不开时会还原旧版；同一网络下的手机连接更稳定。",
+        "changes": [
+          "Mac：Apple 芯片、内存 16 GB 及以上的 Mac 可以生成和编辑图片。",
+          "Mac：以后的更新中，新版刚打开就停止时会自动换回旧版。旧版保存在隐藏文件夹里，不再出现在搜索和启动台中。更新失败时，失败原因和两个按钮紧跟在说明下方显示。",
+          "手机访问：在启动器中打开手机访问后，手机页面即可连接，较旧的手机浏览器也能使用。",
+          "队列：读取队列只失败一次时不再弹出“连接已断开”卡片；连续失败三次才出现，连接恢复后自动消失；短时间断线时，正在运行的循环会保留。",
+          "启动器：所选文件夹不是 ComfyUI 文件夹时，会指出附近找到的 ComfyUI 文件夹。Windows：引擎常用端口落在 Windows 保留的端口段里时，也能正常启动。",
+          "安装：没有任何生成记录的安装，后台也会预编译标准尺寸。",
+          "失败提示：生成过程中模型文件发生变化时，失败文字会写明变化的内容。"
+        ]
+      }
+    },
     {
       "product_version": "0.4.16",
       "en": {
@@ -77,9 +143,9 @@
         "changes": [
           "生图：本机生成过的图片都保存在历史记录里，按时间从新到旧排列，可放到画布、用作参考图、删除或打开所在文件夹。空白画布可选“标准 / 高清”尺寸。",
           "生图：6–8 GB 显存的显卡解码时占用的显存更少，速度更快。显存放得下整个模型的显卡，权重直接加载到显卡，不再在内存里留一份副本，加载后内存占用从约 15 GB 降到约 2 GB。",
-          "提交问题：生成、剪辑与导出、环境与模型、生图、智能体连接、作品库、提示词优化、分享、更新和启动器里，出现错误或失败提示的地方旁边都有“提交问题”按钮，点一下带上情况打开问题反馈。",
+          "提交问题：生成、剪辑与导出、环境与模型、生图、智能体连接、作品库、提示词优化、分享、更新和启动器里，出现错误或失败提示的地方旁边都有“提交问题”按钮，点击后带上情况打开问题反馈。",
           "AI 全自动：对话删不掉时会说明原因，并提供“停止并删除”；其他失败也会提示，并带“提交问题”按钮。",
-          "白模：现成场景只保留“橘猫跳上书架”，点一下直接开始。白模没做成时会说明原因和下一步，渲染中页面显示进度。问白模进度时会回答进度，不再当成新要求。",
+          "白模：现成场景只保留“橘猫跳上书架”，点击直接开始。白模没做成时会说明原因和下一步，渲染中页面显示进度。问白模进度时会回答进度，不再当成新要求。",
           "人物设定图：背面图里头和身体一起转向背后。",
           "Mac：支持分段生成长视频。",
           "启动器与更新：Windows 版在中国大陆更新更快。GitHub 慢时，启动器可以从国内镜像下载更新，镜像上的每个文件都先按发布签名校验。“确认安装”页适配窄窗口：侧栏收成图标，按钮始终可见。",
@@ -234,43 +300,6 @@
           "图像和视频失败请求的诊断报告现在记录请求开始和生成进程结束时的可用内存，并标明进程是否疑似被系统结束。",
           "节点：英文界面里 Width、Height、Seed 的大小写与其他项一致。",
           "修复：用旧版本保存的工作流或恢复的标签页生成时提示步间缓存参数无效。"
-        ]
-      }
-    },
-    {
-      "product_version": "0.4.9",
-      "en": {
-        "summary": "Quality levels are reworked: Medium is one pass of 8 steps, and High and Max use step caches to finish much sooner; decoding on Windows reads ahead earlier on slow drives, and the editor handles ranges, splits and text tracks more reliably.",
-        "changes": [
-          "Quality levels: Medium is one pass of 8 steps; High and Max run 20 steps with step caches and finish much sooner than plain 20 steps.",
-          "Decoding on Windows: read-ahead is sized by physical memory and starts earlier on slow drives, so the end of a run waits less for the disk.",
-          "When Windows runs out of virtual memory, in any system language, FreeVideo now retries the generation automatically in a fresh process and reports a memory shortage if it still fails.",
-          "The progress estimate counts reference images, so requests with reference images show a closer total time from the start.",
-          "Editor: dragging a range's left edge to the start of the timeline no longer pushes its right edge later; splitting a sped-up or reversed part keeps the fade-in only on the first half and the fade-out only on the second.",
-          "Editor: drag-selecting parts is smooth again on timelines with many parts.",
-          "Editor text: clicking the side Content box right after pressing T keeps the new text track, and dropping text onto a locked text track says the track is locked.",
-          "Long videos: each part's description can also be edited in a larger window.",
-          "Chat: when a conversation is full, the notice appears once under the message and its button starts a new chat instead of retrying.",
-          "Export: the sizes offered in the export dialog are rounded the same way as the saved work.",
-          "Diagnostic reports record how much of the graphics card other programs were using during each sampling step.",
-          "Launcher: when the browser cannot be opened automatically, the message says to click Copy address and open it in a browser, in Chinese as well. Canvas margin labels stay readable and aligned. Nodes: width, height, duration and seed have Chinese labels."
-        ]
-      },
-      "zh": {
-        "summary": "质量档位调整：标准为单遍 8 步，精细和极致用步间缓存，快得多；Windows 解码在慢硬盘上更早预读；编辑器的区间、切分和文字轨更可靠。",
-        "changes": [
-          "质量档位：标准为单遍 8 步；精细和极致为 20 步加步间缓存，比纯 20 步快得多。",
-          "Windows 解码：预读按物理内存决定大小，并在慢硬盘上更早开始，生成收尾时等硬盘的时间更短。",
-          "Windows 虚拟内存耗尽时，不论系统语言，FreeVideo 现在会在新进程中自动重试生成，仍失败时提示内存不足。",
-          "进度估计把参考图计入，带参考图的请求一开始就显示更接近实际的总时间。",
-          "编辑器：把区间左边拖到时间线开头，右边不再被往后推；切分加速或倒放的片段时，淡入只留在前半段，淡出只留在后半段。",
-          "编辑器：片段很多时，框选重新变得流畅。",
-          "编辑器文字：按 T 后马上点侧边“内容”框，新文字轨会保留；把文字拖到已锁定的文字轨上会提示该轨已锁定。",
-          "长视频：每段描述也能在放大窗口里编辑。",
-          "对话：对话已满时，提示只在消息下出现一次，按钮换成“新对话”。",
-          "导出：导出窗口里给出的尺寸和保存的作品用同样的方式取整。",
-          "诊断报告记录每一步采样时其他程序占用显卡的比例。",
-          "启动器：浏览器没能自动打开时，提示点“复制地址”到浏览器里打开，中文界面也显示中文。画布边距标签更清楚、对齐。节点：宽度、高度、时长和种子有中文标签。"
         ]
       }
     }

@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 from types import SimpleNamespace
 from . import execution_paths
 from . import subprocess_output
@@ -23,8 +24,8 @@ import threading
 import time
 from urllib.parse import quote, unquote, urlencode, urljoin, urlsplit
 from . import proxy
-from .long_paths import io_path, plain_errors
-from .system import curl_executable, missing_curl_message, windows
+from .long_paths import io_path, is_windows, path_chars, plain, plain_errors
+from .system import curl_executable, curl_ca_arguments, missing_curl_message, windows
 
 
 SOURCES = {
@@ -155,6 +156,9 @@ def curl_command(timeout, env=None):
     command = [executable, '--config', '-', '--silent', '--show-error', '--no-location-trusted', '--location',
             '--max-redirs', '5', '--fail', '--proto', '=https,http', '--proto-redir', '=https,http',
             '--connect-timeout', str(timeout), '--user-agent', 'FreeVideo-Setup/1']
+    command += curl_ca_arguments(executable, env)
+    if '--proxy-cacert' not in command and (env or {}).get('FREEVIDEO_CURL_PROXY_CA'):
+        command += ['--proxy-cacert', env['FREEVIDEO_CURL_PROXY_CA']]
     if (env or {}).get('FREEVIDEO_PROXY_ROUTE') == 'direct':
         command += ['--proxy', '', '--noproxy', '*']
     return command
@@ -578,8 +582,11 @@ def _package_failure(error):
     value = re.sub(r'(?i)(\b[\w-]{0,64}(?:token|password|secret|api[_-]?key)\s*[=:]\s*)[^\s,;&]+',
                    r'\1<REDACTED>', value)
     # Keep a stable path marker without exposing usernames, drives or mounts.
-    value = re.sub(r'(?<![A-Za-z0-9_:/])(?:[A-Za-z]:[\\/]|/)([^\s"\'<>;,)\]}]*)',
-                   lambda match: '<PATH>/' + re.split(r'[\\/]', match.group(1).rstrip('\\/'))[-1], value)
+    value = re.sub(r'(?<![A-Za-z0-9_:/])(?:(?P<relative>\.{1,2}/[^\s"\'<>;,)\]}]*)|'
+                   r'(?:[A-Za-z]:[\\/]|/)([^\s"\'<>;,)\]}]*))',
+                   lambda match: match.group('relative') if match.group('relative') is not None
+                   and not re.search(r'[\\/]', match.group('relative').split('/', 1)[1]) else
+                   '<PATH>/' + re.split(r'[\\/]', match.group(0).rstrip('\\/'))[-1], value)
     lines = [line.strip() for line in value.splitlines() if line.strip()]
     detail = '\n'.join(lines[-12:])[-4096:] if lines else 'no package-manager output'
     summary = next((line for line in lines if line), detail).strip()[:320]
@@ -833,7 +840,44 @@ def _redirect_fields(text):
     return status.strip(), destination.strip()
 
 
-def download(candidates, path, expected, progress=None, *, network=None, env=None, size=None,
+DOWNLOAD_SIBLING_CHARS = 21  # '.partial.source.json' beside the file
+
+
+def move_file(source, destination):
+    """Move one file by the long-path entry; across volumes copy it and remove the source."""
+    source, destination = io_path(source), io_path(destination)
+    try:
+        source.replace(destination)
+    except OSError:
+        shutil.copy2(source, destination)
+        source.unlink()
+
+
+def download(candidates, path, expected, *args, **options):
+    """Fetch into `path`; where curl cannot name it (Windows, beyond 259 characters), in a short folder.
+
+    The file and what resumes it (partial bytes, source record) go to the short
+    folder first, and whatever is left there comes back, also after a failure.
+    """
+    path = Path(path)
+    scratch = None
+    if is_windows() and path_chars(plain(path)) + DOWNLOAD_SIBLING_CHARS > GIT_PATH_LIMIT:
+        scratch = git_scratch_folder()
+    if scratch is None:
+        return download_here(candidates, path, expected, *args, **options)
+    try:
+        io_path(path.parent).mkdir(parents=True, exist_ok=True)
+        for entry in io_path(path.parent).iterdir():
+            if entry.name == path.name or entry.name.startswith(path.name + '.partial'):
+                move_file(entry, scratch / entry.name)
+        return download_here(candidates, scratch / path.name, expected, *args, **options)
+    finally:
+        for entry in io_path(scratch).iterdir():
+            move_file(entry, path.parent / entry.name)
+        remove_tree(scratch)
+
+
+def download_here(candidates, path, expected, progress=None, *, network=None, env=None, size=None,
              algorithm='sha256', git_blob=False, headers_for=None, stall_seconds=None, category='download',
              low_speed_limit=1024, max_seconds=None, cycles=2, slow_seconds=None, keep_partial=False,
              validate_url=None, verify=None, fallbacks=None):
@@ -847,6 +891,13 @@ def download(candidates, path, expected, progress=None, *, network=None, env=Non
     path = Path(path)
     updating = category == 'launcher-update'
     integrity_failed = False
+    attempts = {}
+
+    def note_failure(source, route, reason, status=''):
+        # The last reason each source and route gave, for the final error.
+        attempts.pop((source, route), None)  # a repeat moves to the end, so the last 8 are the latest
+        attempts[source, route] = reason + (' (HTTP %s)' % status if str(status).isdigit() and status != '000' else '')
+
     failed_sources = set()
     transferred, high_water, last_rate = 0, 0, 0.
     transfer_samples = deque([(time.monotonic(), 0)])
@@ -1103,6 +1154,7 @@ def download(candidates, path, expected, progress=None, *, network=None, env=Non
                         integrity_failed = True
                         failed_sources.add(name)
                     source_health(network, category, name, False)
+                    note_failure(name, route, 'response-size-exceeded')
                     event(network, category=category, source=name, file=path.name, action='fallback',
                           method='curl', reason='response-size-exceeded', observed_bytes=oversized,
                           expected_bytes=size, resume_bytes=offset)
@@ -1130,10 +1182,12 @@ def download(candidates, path, expected, progress=None, *, network=None, env=Non
                             continue
                         failed_sources.add(name)
                     source_health(network, category, name, False)
+                    note_failure(name, route, 'integrity-mismatch')
                     event(network, category=category, source=name, file=path.name, action='fallback', reason='integrity-mismatch')
                     break
                 if offset and (process.returncode == 33 or process.returncode == 22 and status == '416') and restart == 0:
                     if model or keep_partial:
+                        note_failure(name, route, 'source-does-not-support-range')
                         event(network, category=category, source=name, file=path.name,
                               action='resume-refused', resume_bytes=offset, reason='source-does-not-support-range')
                         break
@@ -1154,6 +1208,7 @@ def download(candidates, path, expected, progress=None, *, network=None, env=Non
                 if updating and stalled:
                     failed_sources.add(name)
                 reason = 'no-progress' if stalled else 'slow-transfer' if slow else 'faster-source' if faster else 'curl-' + str(process.returncode)
+                note_failure(name, route, reason, status)
                 alternatives = route_order(network, category, name, env)
                 if alternatives.index(route) + 1 < len(alternatives):
                     event(network, category=category, source=name, route=alternatives[alternatives.index(route)+1],
@@ -1169,7 +1224,12 @@ def download(candidates, path, expected, progress=None, *, network=None, env=Non
             event(network, category=category, source=name, file=path.name, action='restart-approved',
                   retained_bytes=partial.stat().st_size, reason='resume-unavailable')
             retain_partial(partial, 'restart-approved')
-    error = DownloadError('Every download source failed for %s. Check your network or choose another connection mode in Downloads. Partial files retained' % path.name)
+    message = 'Every download source failed for %s. Check your network or choose another connection mode in Downloads. Partial files retained' % path.name
+    if attempts:
+        message += '. Attempts: ' + '; '.join('%s/%s: %s' % (source, route, reason)
+                                              for (source, route), reason in list(attempts.items())[-8:])
+    error = DownloadError(message)
+    error.attempts = [dict(source=source, route=route, reason=reason) for (source, route), reason in attempts.items()]
     error.integrity = integrity_failed
     raise error
 
@@ -1202,6 +1262,109 @@ def git_parameter(value):
     return "'" + value.replace("'", "'\\''").replace('!', "'\\!'") + "'"
 
 
+# Git for Windows cannot find a repository from a working folder deeper than
+# the ordinary path limit, with or without core.longpaths, and a junction does
+# not help: the folder it reports is the real one. Git therefore works in a short
+# real scratch folder and the finished checkout is moved into place.
+GIT_FOLDER_RESERVE = 140
+GIT_SCRATCH_BASE_CHARS = 80
+GIT_PATH_LIMIT = 259
+
+
+def git_folder_too_deep(path):
+    return is_windows() and path_chars(plain(path)) + GIT_FOLDER_RESERVE > GIT_PATH_LIMIT
+
+
+def git_scratch_folder():
+    """A new short real folder for Git to work in, or None where none can be made."""
+    bases = [tempfile.gettempdir()]
+    for key in ('ProgramData', 'LOCALAPPDATA'):
+        if os.environ.get(key):
+            bases.append(os.path.join(os.environ[key], 'FV'))
+    for base in bases:
+        if path_chars(plain(base)) > GIT_SCRATCH_BASE_CHARS:
+            continue
+        try:
+            os.makedirs(base, exist_ok=True)
+            return Path(tempfile.mkdtemp(prefix='fvgit-', dir=base))
+        except OSError:
+            continue
+    return None
+
+
+def remove_tree(path):
+    def writable(function, name, _):
+        os.chmod(name, 0o700)
+        function(name)
+    shutil.rmtree(io_path(path), onerror=writable)
+
+
+def relocate(source, destination):
+    """Move a finished folder; where a rename cannot (another volume) copy it."""
+    source, destination = io_path(source), io_path(destination)
+    try:
+        source.rename(destination)
+        return
+    except OSError:
+        pass
+    try:
+        shutil.copytree(source, destination, symlinks=True)
+    except BaseException:
+        if destination.exists():
+            remove_tree(destination)
+        raise
+    remove_tree(source)
+
+
+def repository_state(path, git, env, revision='HEAD', **options):
+    """What `revision` is and what local changes the checkout at `path` has."""
+    path = Path(path)
+    prefix = [git, '-c', 'core.longpaths=true']
+    hidden = dict(hidden_console(), **options)
+    if not git_folder_too_deep(path):
+        head = subprocess_output.output_external([*prefix, '-C', str(path), 'rev-parse', revision], env=env, **hidden).strip()
+        dirty = subprocess_output.output_external([*prefix, '-C', str(path), 'status', '--porcelain', '--untracked-files=no'], env=env, **hidden)
+        return head, dirty
+    # Name the repository instead of entering it. If Git cannot read it this
+    # way, HEAD is read from the file and local changes cannot be checked.
+    git_dir = '--git-dir=' + str(path / '.git')
+    folder = tempfile.gettempdir()
+    try:
+        head = subprocess_output.output_external([*prefix, git_dir, 'rev-parse', revision], cwd=folder, env=env, **hidden).strip()
+        dirty = subprocess_output.output_external([*prefix, git_dir, 'diff-index', '--cached', '--name-only', 'HEAD'], cwd=folder, env=env, **hidden)
+    except (subprocess.CalledProcessError, OSError):
+        # Git also refuses a --git-dir this long, so read what is asked from the files.
+        head = stored_head(path)
+        if revision == 'HEAD':
+            return head, ''
+        tree = stored_tree(path, head) if revision == 'HEAD^{tree}' else None
+        if tree is None:
+            raise
+        return tree, ''
+    return head, dirty
+
+
+def stored_head(path):
+    return io_path(path / '.git' / 'HEAD').read_text(encoding='utf-8').strip()
+
+
+def stored_tree(path, commit):
+    """The tree named by a loose commit object, or None (packed or missing objects)."""
+    import zlib
+    try:
+        if commit.startswith('ref:'):
+            name = commit.split(None, 1)[1]
+            commit = io_path(path / '.git' / name).read_text(encoding='utf-8').strip()
+        raw = zlib.decompress(io_path(path / '.git' / 'objects' / commit[:2] / commit[2:]).read_bytes())
+    except (OSError, ValueError, IndexError, zlib.error):
+        return None
+    header, _, body = raw.partition(b'\0')
+    first = body.split(b'\n', 1)[0]
+    if header.startswith(b'commit ') and first.startswith(b'tree ') and len(first) == 45:
+        return first[5:].decode('ascii')
+    return None
+
+
 def clone(target, url, commit, *, sparse=None, run=None, network=None, env=None):
     """Fetch only the pinned commit, atomically; never reset existing checkouts."""
     target = Path(target)
@@ -1209,25 +1372,24 @@ def clone(target, url, commit, *, sparse=None, run=None, network=None, env=None)
     env = proxy_environment(env)
     env.update(GIT_TERMINAL_PROMPT='0', GIT_HTTP_LOW_SPEED_LIMIT='1024', GIT_HTTP_LOW_SPEED_TIME='20')
     git = env.get('FREEVIDEO_GIT') or 'git'
-    version = git_version(git, env) if not target.exists() else None
+    version = git_version(git, env) if not io_path(target).exists() else None
     if version and version < MIN_GIT:
         raise RuntimeError(old_git_message(version))
     def execute(label, command):
-        command = [git, *command[1:]]
+        command = [git, '-c', 'core.longpaths=true', *command[1:]]
         if run:
             return run(label, command, env=env)
         result = subprocess_output.run_external(list(map(str, command)), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **hidden_console())
         if result.returncode:
             raise RuntimeError(result.stdout[-2500:])
-    if target.exists():
-        if not (target / '.git').exists():
+    if io_path(target).exists():
+        if not io_path(target / '.git').exists():
             raise ValueError('Existing dependency is not a Git checkout of the pinned source: ' + str(target))
-        head = subprocess_output.output_external([git, '-C', str(target), 'rev-parse', 'HEAD'], env=env, **hidden_console()).strip()
-        dirty = subprocess_output.output_external([git, '-C', str(target), 'status', '--porcelain', '--untracked-files=no'], env=env, **hidden_console())
+        head, dirty = repository_state(target, git, env)
         if head != commit or dirty:
             raise ValueError('Existing dependency differs from the pinned clean source: ' + str(target))
         return target
-    target.parent.mkdir(parents=True, exist_ok=True)
+    io_path(target.parent).mkdir(parents=True, exist_ok=True)
     candidates = urls(dict(network, sources=dict(network.get('sources', {}), github=network.get('sources', {}).get('git', [{'id': 'official'}]))), 'github', url, env)
     configured_env = env
     for name, endpoint, route in [(name, endpoint, route) for name, endpoint in candidates
@@ -1235,19 +1397,21 @@ def clone(target, url, commit, *, sparse=None, run=None, network=None, env=None)
         env = route_environment(network, 'git', name, configured_env, route)
         temporary = target.with_name(target.name + '.partial-' + str(time.time_ns()))
         event(network, category='git', source=name, route=route, file=target.name, action='attempt', commit=commit)
+        scratch = git_scratch_folder() if git_folder_too_deep(temporary) else None
+        work = scratch / 'repo' if scratch else temporary
         try:
-            execute(target.name + '-init-' + name, ['git', 'init', '--quiet', temporary])
+            execute(target.name + '-init-' + name, ['git', 'init', '--quiet', work])
             # Never depend on a user's global CRLF conversion or long-path
             # settings when constructing the exact official patched tree.
-            execute(target.name + '-line-endings', ['git', '-C', temporary, 'config', 'core.autocrlf', 'false'])
-            execute(target.name + '-long-paths', ['git', '-C', temporary, 'config', 'core.longpaths', 'true'])
+            execute(target.name + '-line-endings', ['git', '-C', work, 'config', 'core.autocrlf', 'false'])
+            execute(target.name + '-long-paths', ['git', '-C', work, 'config', 'core.longpaths', 'true'])
             if sparse:
                 # The patterns file with cone mode off is what `sparse-checkout
                 # set --no-cone` writes; every Git reads it at checkout.
-                execute(target.name + '-sparse', ['git', '-C', temporary, 'config', 'core.sparseCheckout', 'true'])
-                execute(target.name + '-sparse-cone', ['git', '-C', temporary, 'config', 'core.sparseCheckoutCone', 'false'])
-                (temporary / '.git' / 'info').mkdir(exist_ok=True)
-                (temporary / '.git' / 'info' / 'sparse-checkout').write_text(''.join(p + '\n' for p in sparse), encoding='utf-8')
+                execute(target.name + '-sparse', ['git', '-C', work, 'config', 'core.sparseCheckout', 'true'])
+                execute(target.name + '-sparse-cone', ['git', '-C', work, 'config', 'core.sparseCheckoutCone', 'false'])
+                io_path(work / '.git' / 'info').mkdir(exist_ok=True)
+                io_path(work / '.git' / 'info' / 'sparse-checkout').write_text(''.join(p + '\n' for p in sparse), encoding='utf-8')
             # The URL reaches Git the way `git -c` hands settings to its own
             # children, in every Git version: never in process arguments, logs
             # or the repository's config, even if the fetch is killed.
@@ -1255,14 +1419,16 @@ def clone(target, url, commit, *, sparse=None, run=None, network=None, env=None)
             env = dict(env, GIT_CONFIG_PARAMETERS=' '.join(filter(None, (
                 env.get('GIT_CONFIG_PARAMETERS', '').strip(), git_parameter('remote.origin.url=' + endpoint)))))
             try:
-                execute(target.name + '-fetch-' + name, ['git', '-C', temporary, '-c', 'fetch.fsckObjects=true', 'fetch', '--depth=1', '--no-tags', 'origin', commit])
+                execute(target.name + '-fetch-' + name, ['git', '-C', work, '-c', 'fetch.fsckObjects=true', 'fetch', '--depth=1', '--no-tags', 'origin', commit])
             finally:
                 env = original
-            execute(target.name + '-checkout', ['git', '-C', temporary, 'checkout', '--detach', commit])
-            actual = subprocess_output.output_external([git, '-C', str(temporary), 'rev-parse', 'HEAD'], env=env, **hidden_console()).strip()
+            execute(target.name + '-checkout', ['git', '-C', work, 'checkout', '--detach', commit])
+            actual = subprocess_output.output_external([git, '-c', 'core.longpaths=true', '-C', str(work), 'rev-parse', 'HEAD'], env=env, **hidden_console()).strip()
             if actual != commit:
                 raise ValueError('Downloaded source did not match its pinned commit')
-            temporary.rename(target)
+            if scratch:
+                relocate(work, temporary)
+            io_path(temporary).rename(io_path(target))
             source_health(network, 'git', name, True)
             route_health(network, 'git', name, route)
             event(network, category='git', source=name, route=route, file=target.name, action='verified', commit=commit)
@@ -1272,4 +1438,7 @@ def clone(target, url, commit, *, sparse=None, run=None, network=None, env=None)
                 raise
             source_health(network, 'git', name, False)
             event(network, category='git', source=name, route=route, file=target.name, action='fallback', reason='network-fetch-failed')
+        finally:
+            if scratch and scratch.exists():
+                remove_tree(scratch)
     raise RuntimeError('All Git sources failed. Check your network or connection mode in Downloads. Incomplete checkouts retained beside ' + str(target))

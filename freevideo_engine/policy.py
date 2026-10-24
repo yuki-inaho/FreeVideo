@@ -482,6 +482,9 @@ def int8_gpu_output_need(tokens, windows=False, full_tail=False):
         peak = at_low + (at_high - at_low) / (high - low) * (tokens - low)
     return int(peak * GiB) + margin
 MIN_GPU_RESERVE_GIB = .2
+# The smallest default RAM growth headroom a Windows foreground request may be
+# admitted with: the floor Linux already uses.
+MIN_RAM_RESERVE_GIB = 1.
 
 
 FF_STASH_WIDTH = 14336  # BF16 SwiGLU output channels kept for the per-tensor FP8 scale
@@ -888,6 +891,25 @@ def _choose(hardware: Hardware, *, vram_gib=None, ram_gib=None, attention='auto'
     reserve_gpu, reserve_ram = budget['gpu_system_reserve_bytes']/GiB, budget['ram_system_reserve_bytes']/GiB
     gpu_budget, ram_budget = budget['gpu_budget_bytes'], budget['ram_budget_bytes']
     desktop = hardware.system == 'Windows'
+    # The encoding phase already has a measured host floor. Do not discard a
+    # preloaded encoder because the later video stage needs a larger minimum;
+    # automatic_profile replans generation after conditioning has been saved.
+    ram_minimum = ENCODER_HOST_BYTES if stage == 'encoding' else 4*GiB
+    # Let a Windows foreground request spend RAM growth headroom before
+    # rejecting it, as the GPU's is spent below: the default 2 GiB is taken
+    # from live available memory, so a machine whose free RAM sits a few
+    # hundred MB under the minimum plus that reserve was refused outright.
+    # Only a request the default reserve alone refuses changes; admitted
+    # placements and an explicit reserve stay as they were. Neither the
+    # minimum nor the working-set estimate is relaxed. The reserve drops to
+    # the Linux floor, not to whatever leaves exactly the minimum: a
+    # 1344x768, 243-frame request on the smallest plan reached a 4.11 GiB
+    # working set against a 4.00 GiB budget and was stopped by the RAM guard
+    # when the VAE loaded, so the budget keeps every byte the floor leaves.
+    if (desktop and ram_reserve_gib is None and ram_budget < ram_minimum
+            and free_ram - int(MIN_RAM_RESERVE_GIB * GiB) >= ram_minimum):
+        reserve_ram = MIN_RAM_RESERVE_GIB
+        ram_budget = free_ram - int(reserve_ram * GiB)
     request_gpu_budget = gpu_budget
     gpu_budget -= placement_workspace
     # What this machine has actually held, for the weight cache only.
@@ -971,10 +993,6 @@ def _choose(hardware: Hardware, *, vram_gib=None, ram_gib=None, attention='auto'
         reserve_gpu = MIN_GPU_RESERVE_GIB
         request_gpu_budget = free_gpu - int(reserve_gpu * GiB)
         gpu_budget = request_gpu_budget - placement_workspace
-    # The encoding phase already has a measured host floor. Do not discard a
-    # preloaded encoder because the later video stage needs a larger minimum;
-    # automatic_profile replans generation after conditioning has been saved.
-    ram_minimum = ENCODER_HOST_BYTES if stage == 'encoding' else 4*GiB
     if gpu_budget < gpu_minimum or ram_budget < ram_minimum:
         raise ResourceBudgetError(hardware, gpu_total, ram_total, free_gpu, free_ram, reserve_gpu, reserve_ram,
                                   gpu_minimum_bytes=gpu_minimum + placement_workspace, ram_minimum_bytes=ram_minimum,

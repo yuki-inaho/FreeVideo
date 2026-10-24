@@ -624,6 +624,7 @@ def execute_attempts(history, identity, profile, canvas, launch, *,
             row['seconds'] = time.perf_counter() - started
             if isinstance(metrics, dict):
                 row['metrics'] = attempt_metrics(metrics)
+                details['completed_steps'] = row['metrics']['completed_steps']
             history.finish(attempt, failure['outcome'], details=details)
             row.update(state=failure['outcome'], failure=failure)
             persist()

@@ -1,5 +1,5 @@
 // One whole-video estimate and the same five rows in Studio and the node view.
-import { saveReport, reportIssue, showReportTip } from './report_issue.js';
+import { saveReport, reportIssue, showReportTip, focusReportTip } from './report_issue.js';
 import { issueButton } from './issue_button.js';
 const css = document.createElement('link');
 css.rel = 'stylesheet'; css.href = new URL('./generation_progress.css', import.meta.url).href;
@@ -403,6 +403,7 @@ export function createDiagnosticReportControl(t, {api = null, fallback = null, t
     async function downloadReport() { await saveReport(await fetchReport()); }
     report.onclick = async () => {
         if (report.disabled || report.hidden) return;
+        if (tip && report.isConnected && focusReportTip(report.parentElement)) return;
         problem?.remove();
         const current = revision;
         report.disabled = true; report.textContent = t('Preparing report…', '正在整理报告…');

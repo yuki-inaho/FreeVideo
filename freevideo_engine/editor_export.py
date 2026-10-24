@@ -75,7 +75,8 @@ def _seam_call(operation, *args, **kwargs):
 def _reason(error):
     if isinstance(error, ExportError):
         return error.reason
-    if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+    from .disk_space import ran_out
+    if ran_out(error):
         return 'disk_full'
     if isinstance(error, PermissionError) or isinstance(error, OSError) and error.errno in (errno.EACCES, errno.EROFS):
         return 'not_writable'
@@ -989,9 +990,10 @@ class ExportQueue:
         self.pending = deque()
         self.worker = None
 
-    @staticmethod
-    def _view(job):
+    def _view(self, job):
+        # queued: still waiting for its turn; state stays 'running' for older readers.
         return {**{key: job[key] for key in ('id', 'state', 'fraction', 'work', 'reason')},
+                'queued': job['state'] == 'running' and job['id'] in self.pending,
                 **job['options'].status(), 'path': job.get('path'), 'url': job.get('url'),
                 'project_id': job['project'].get('id'), 'revision': job['project'].get('revision')}
 
@@ -1100,11 +1102,15 @@ class ExportQueue:
                         _checked_target(folder, self.root).rmdir()
                 except (OSError, ExportError):
                     pass
+                reason = _reason(error)
+                if reason == 'failed' and not isinstance(error, ExportCancelled):
+                    # The page only says the export failed; the log keeps why for the diagnostic report.
+                    logging.getLogger(__name__).error('Editor export failed.', exc_info=error)
                 with self.lock:
                     if isinstance(error, ExportCancelled) or job['stop'].is_set():
                         job.update(state='cancelled', reason=None)
                     else:
-                        job.update(state='failed', reason=_reason(error))
+                        job.update(state='failed', reason=reason)
 
 
 def register():

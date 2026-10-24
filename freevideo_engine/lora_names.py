@@ -8,17 +8,33 @@ INT8_UNMERGEABLE = ('This LoRA changes parts of the model that the int8 version 
                     'so it cannot be used for now. LoRAs that change only linear layers work.')
 
 
+# Factor names trainers write: PEFT lora_A/lora_B, Kohya and diffusers
+# lora_down/lora_up, each with or without the trailing ".weight".
+_FACTOR = re.compile(r'(.+)\.lora_(A|B|down|up)(?:\.weight)?')
+_SIDE = {'A': 'A', 'down': 'A', 'B': 'B', 'up': 'B'}
+
+
+def _canonical(key):
+    return key.replace('.default.', '.')
+
+
+def supported(key):
+    """Whether adapter_keys can index this tensor name."""
+    canonical = _canonical(key)
+    return bool(_FACTOR.fullmatch(canonical)) or canonical.endswith(('.alpha', '.diff', '.diff_b'))
+
+
 def adapter_keys(keys):
     """Index factor/difference names without reading any tensors."""
     pairs, full = {}, []
     for key in keys:
-        canonical = key.replace('.default.', '.').replace('.lora_down.weight', '.lora_A.weight').replace('.lora_up.weight', '.lora_B.weight')
-        match = re.fullmatch(r'(.+)\.lora_([AB])\.weight', canonical)
+        canonical = _canonical(key)
+        match = _FACTOR.fullmatch(canonical)
         if match:
-            pair = pairs.setdefault(match[1], {})
-            if match[2] in pair:
+            pair, side = pairs.setdefault(match[1], {}), _SIDE[match[2]]
+            if side in pair:
                 raise ValueError('Duplicate LoRA factor: ' + key)
-            pair[match[2]] = key
+            pair[side] = key
         elif canonical.endswith('.alpha'):
             pairs.setdefault(canonical[:-6], {})['alpha'] = key
         elif canonical.endswith(('.diff', '.diff_b')):

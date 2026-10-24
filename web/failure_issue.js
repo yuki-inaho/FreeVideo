@@ -13,8 +13,10 @@ const PHASES = [
 export function failureStage(report) {
     if (report?.stage === 'submission') return ['submitting the task', '提交任务'];
     if (report?.stage === 'queue') return ['queue operation', '队列操作'];
+    // A resource-planning snapshot label says where the resources were last read, not where the run stopped.
     const named = [report?.progress?.phase, report?.progress?.stage,
-        /^Stage: (\S+)/m.exec(String(report?.details || ''))?.[1]].filter(Boolean);
+        /^Stage: (\S+)/m.exec(String(report?.details || ''))?.[1]]
+        .filter(name => name && !/^(?:before|after)-encoding$|^retry-\d+$/.test(name));
     for (const name of named)
         for (const [pattern, words] of PHASES) if (pattern.test(name)) return words;
     return null;

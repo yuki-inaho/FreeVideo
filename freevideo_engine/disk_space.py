@@ -7,6 +7,7 @@ usage, which Apple recommends for downloads the user asked for. Volumes of
 one APFS container share their space, so they are counted as one disk.
 Other systems keep shutil.disk_usage, which matches Explorer and df.
 """
+import errno
 import os
 from pathlib import Path
 import re
@@ -193,6 +194,18 @@ def free_bytes(path):
         return volume(path)['free_bytes']
     except (OSError, ValueError):
         return shutil.disk_usage(io_path(existing(path))).free
+
+
+def ran_out(error):
+    """Whether a write failed because the disk (or the user's quota) is full, through wrapper exceptions."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, OSError) and (error.errno in (errno.ENOSPC, getattr(errno, 'EDQUOT', errno.ENOSPC))
+                                           or getattr(error, 'winerror', None) in (39, 112)):
+            return True
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+    return False
 
 
 @plain_errors

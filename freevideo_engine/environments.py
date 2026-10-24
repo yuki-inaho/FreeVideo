@@ -1,4 +1,5 @@
 """Pinned installation layouts; model lifetimes are independent of venv count."""
+import logging
 import os
 from pathlib import Path
 import platform
@@ -26,6 +27,65 @@ def constraints_file(name, system=None):
 # Requirement files, editables, wheels and --python keep their spaces.
 UV_FILE_LIST_OPTIONS = frozenset(('-c', '--constraint', '--constraints', '-b', '--build-constraint',
                                   '--build-constraints', '--override', '--overrides'))
+
+
+# uv 0.9.0 adds sdists-v9/<index>/<name>/<version>/<revision>/src and
+# setuptools adds build/bdist.<platform>/wheel/... beneath the cache. Reserve
+# 200 characters below the engine root, including downloads/uv-cache. This
+# allows headroom above measured staging paths, not arbitrary sdists.
+UV_BUILD_PATH_CHARS = 200
+
+
+PYTHON_NAMES = ('python.exe', 'python', 'pythonw.exe')
+
+
+def uv_build_environment(command, root, environ):
+    """Windows uv pip builds use a short view of the existing cache and scratch.
+
+    TEMP alone does not move uv's sdist source tree or isolated build venv.
+    Mark only this child's view: processes.popen translates its paths, while
+    installation settings, cache ownership and the parent's environment stay put.
+    """
+    # `venv` and `python` also write into the cache (interpreter records, downloads) below the same root.
+    # A Python child also needs it: it runs `uv` itself (VDN and ComfyUI packages) and the loader
+    # refuses a DLL such as torch\\lib\\c10.dll whose full path exceeds the limit (WinError 206).
+    runs_uv = list(command[1:2]) in (['pip'], ['venv'], ['python']) and Path(command[0]).name.lower() in ('uv', 'uv.exe')
+    if not command or not (runs_uv or Path(str(command[0])).name.lower() in PYTHON_NAMES):
+        return environ
+    from . import launch_view, runtime_alias
+    from .long_paths import io_path, path_chars, plain
+    from .package_paths import WINDOWS_PATH_LIMIT
+    from .triton_compat import TEMP_KEYS, TEMP_ROOT_ENV, _writable_temporary
+    if not runtime_alias._backend.windows():
+        return environ
+    root = Path(os.path.abspath(plain(root)))
+    view = launch_view.current(environ)
+    if (view is None or not root.is_relative_to(view.real)
+            or path_chars(launch_view.value(root, view)) + 1 + UV_BUILD_PATH_CHARS > WINDOWS_PATH_LIMIT):
+        try:
+            view = launch_view.View(root, runtime_alias.runtime_view(root, longest=UV_BUILD_PATH_CHARS))
+        except OSError as error:
+            if (path_chars(root) + 1 + UV_BUILD_PATH_CHARS <= WINDOWS_PATH_LIMIT
+                    and runtime_alias._backend.ansi_path(root)):
+                view = launch_view.View(root, root)
+            else:
+                return environ  # No short entry: keep the old behaviour; packages without source builds still install.
+    if path_chars(launch_view.value(root, view)) + 1 + UV_BUILD_PATH_CHARS > WINDOWS_PATH_LIMIT:
+        return environ
+    temporary = Path(launch_view.value(root / 'tmp' / 'uv', view))
+    try:
+        for path in (temporary.parent, temporary):
+            folder = io_path(path)
+            folder.mkdir(parents=True, exist_ok=True)
+            if folder.is_symlink() or runtime_alias.is_junction(path):
+                raise OSError('The package build temporary folder is a link')
+        _writable_temporary(temporary)
+    except OSError as error:
+        # Like a missing short entry, an unusable scratch folder must not stop installs that worked before.
+        logging.getLogger(__name__).warning('Package builds keep the previous environment: %s', error)
+        return environ
+    return dict(launch_view.environment_view(environ, view),
+                **{key: str(temporary) for key in (*TEMP_KEYS, TEMP_ROOT_ENV)})
 
 
 def uv_file_arguments(command, cwd=None):

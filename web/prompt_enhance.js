@@ -121,15 +121,20 @@ export function createPromptEnhancer({node, input, editor, api, context, setText
     // Available RAM the model needs; the server knows the usual case for this card.
     let ramBytes = 11 * 2 ** 30;
     const gib = value => String(Math.round(value / 2 ** 30));
+    // Unknown codes keep the server's own reason, without paths, so the user can quote it.
+    const reasonOf = error => String(error?.message || '').replace(/[A-Za-z]:[\\/][^\s'"]*|\/[^\s'"]+\/[^\s'"]*/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
     const errorText = error => ({
         busy: t('Finish the current queue before enhancing this prompt.', '请等待当前队列完成后再改写。'),
         prompt_required: t('Type a prompt first; enhancement rewrites it before generating.', '请先输入提示词，生成前会自动改写。'),
         setup_required: t('Complete FreeVideo installation first.', '请先完成 FreeVideo 安装。'),
-        model_missing: t('Download the optional model to enable enhancement.', '下载可选模型后即可启用。'),
-        download_failed: t('Download paused. Retry to resume.', '下载已暂停，重试即可继续。'),
+        model_missing: t('Download the optional model to enable enhancement.', '下载可选模型后可启用。'),
+        download_failed: t('Download paused. Retry to resume.', '下载已暂停，重试可继续。'),
         disk_space: t('Not enough disk space for the optional model.', '可选模型的磁盘空间不足，请清理后重试。'),
         ram_space: t(`This model needs about ${gib(error?.ramBytes || ramBytes)} GiB of available RAM to load. You can keep using the original.`, `此模型加载需约 ${gib(error?.ramBytes || ramBytes)} GiB 可用内存，可先使用原文生成。`),
-        unsupported_media: t('Use images added in Media for enhancement; connected nodes, video and audio are not supported yet.', '增强暂支持在素材中添加的图片；连接节点、视频和音频暂不支持。'),
+        unsupported_media: t('Enhancement can read only images and videos added in Media. You can keep using the original.', '增强只能读取素材中添加的图片和视频，可先使用原文生成。'),
+        connected_media: t('Enhancement cannot read connected nodes. Add images or videos in Media, or use the original.', '增强读不到连接节点的素材，请在素材中添加图片或视频，或使用原文。'),
+        audio_media: t('Enhancement cannot read audio. Add images or videos in Media, or use the original.', '增强读不到音频，请在素材中添加图片或视频，或使用原文。'),
+        unreadable_video: t('Could not read a frame from this video. Replace it with another video or an image, or use the original.', '读不出这个视频的画面，请换一个视频或图片，或使用原文。'),
         too_many_images: t('Use up to 8 reference images for enhancement.', '增强暂支持最多 8 张参考图。'),
         invalid_prompt: t('Enter a prompt of up to 12,000 characters.', '请输入不超过 12,000 字符的提示词。'),
         invalid_output: t('The rewrite was incomplete. Retry or use the original.', '改写结果不完整，请重试或使用原文。'),
@@ -139,7 +144,25 @@ export function createPromptEnhancer({node, input, editor, api, context, setText
         stale: t('The prompt or references changed. Rewrite again for the new scene.', '原文或素材已改变，请按新内容重新改写。'),
         cancelled: t('Cancelled. Your original prompt is retained.', '已取消，原文已保留。'),
         worker_cleanup_failed: t('The rewrite process could not close. Restart FreeVideo before generating.', '改写进程未能退出，请重启 FreeVideo 后再生成。'),
-    }[error?.message] || t('Could not enhance the prompt. Retry or switch enhancement off to use the original.', '暂时无法改写，请重试，或关闭增强使用原文。'));
+    }[error?.message] || t(`Could not enhance the prompt${reasonOf(error) ? `: ${reasonOf(error)}` : ''}. Retry or switch enhancement off to use the original.`,
+        `暂时无法改写${reasonOf(error) ? `。原因：${reasonOf(error)}。` : '，'}请重试，或关闭增强使用原文。`));
+    // After falling back the original is already in use, so only the reason and the next useful step are shown.
+    const fallbackText = error => ({
+        busy: t('The prompt cannot be rewritten while the queue is running.', '队列未完成时不能改写。'),
+        setup_required: t('Rewriting is available after FreeVideo installation is complete.', 'FreeVideo 安装完成后才能改写。'),
+        model_missing: t('Rewriting needs the optional model. Download it to enable rewriting.', '改写需要可选模型，下载后可用。'),
+        download_failed: t('The optional model download paused. Retry to resume.', '可选模型下载已暂停，重试可继续下载。'),
+        disk_space: t('Not enough disk space for the optional model.', '磁盘空间不足，无法安装可选模型。'),
+        ram_space: t(`The rewrite model needs about ${gib(error?.ramBytes || ramBytes)} GiB of available RAM to load.`, `改写模型加载需约 ${gib(error?.ramBytes || ramBytes)} GiB 可用内存。`),
+        invalid_prompt: t('Rewriting supports prompts of up to 12,000 characters.', '改写只支持不超过 12,000 字符的提示词。'),
+        invalid_output: t('The rewrite was incomplete.', '改写结果不完整。'),
+        context_length: t('The scene is too long for the rewrite model.', '内容超出改写模型容量。'),
+        out_of_memory: t('Not enough memory to rewrite. Close other GPU apps before rewriting again.', '改写时内存不足，关闭其他显卡程序后可再改写。'),
+        timeout: t('Rewriting took too long.', '改写超时。'),
+        unsupported_media: errorText(error), too_many_images: errorText(error), stale: errorText(error),
+        connected_media: errorText(error), audio_media: errorText(error), unreadable_video: errorText(error),
+        worker_cleanup_failed: errorText(error),
+    }[error?.message] || (reasonOf(error) ? t(`The rewrite failed: ${reasonOf(error)}.`, `改写失败，原因：${reasonOf(error)}。`) : t('The rewrite failed.', '改写失败。')));
     function save(changed = true) {
         node.properties ||= {};
         node.properties.freevideo_prompt_versions = {...versions.value};
@@ -275,7 +298,7 @@ export function createPromptEnhancer({node, input, editor, api, context, setText
     function useOriginal(error) {
         console.warn('FreeVideo prompt rewrite failed; using the original prompt.', error?.message);
         versions.value.selected = 'original'; apply();
-        show(t('Could not enhance; generated with the original.', '没能改写，已用原文生成。'), 'note');
+        show(t(`Generated with the original prompt. ${fallbackText(error)}`, `已用原文生成。${fallbackText(error)}`), 'note');
     }
     return {element, async beforeGenerate() {
         if (running) {

@@ -21,7 +21,8 @@ from .launcher_copy import ACTION_COPY, size_text
 from .launcher_terminal import Tail
 from .model_status import FAMILIES, NAMES
 from .model_guidance import (package_instructions, video_instructions, runtime_packages_supported, download_view,
-                             export_download_list, DownloadListError, DOWNLOAD_COPY)
+                             export_download_list, DownloadListError, DOWNLOAD_COPY,
+                             image_download_view, export_image_download_list, IMAGE_COPY)
 from .setup_progress import LineHold, ModelLine, progress_text
 from .terminal_ui import clean, duration
 from .model_upgrade import TARGET
@@ -46,12 +47,12 @@ ARCHIVE_FAILURES = {
 
 
 
-@lru_cache(maxsize=4)
 def _lan_password():
     # Resolved per call: the access module is optional and may be absent.
     return importlib.import_module('.lan_password', __package__)
 
 
+@lru_cache(maxsize=4)
 def _qr_rows(text):
     from .qr_code import encode
     try:
@@ -145,6 +146,9 @@ class Session:
         self.image_installer = self.prompt_installer = None
         self.download_export = self.download_error = self.download_error_key = ''
         self._download_view = None
+        # 'image' opens the image model's own list, which needs no file check; any other value is the video list.
+        self.download_scope = 'video'
+        self._image_download_view = None
         self.browser_attempted = False
         self.browser_url = None
         self.port_notice_url = None
@@ -346,7 +350,15 @@ class Session:
         kept = [p for p in self.form['model_dirs'] if io_path(Path(p).expanduser()).is_dir()]
         self.edit('model_dirs', library_roots(kept + [folder]))
 
+    def set_download_scope(self, scope):
+        scope = 'image' if scope == 'image' else 'video'
+        if scope != self.download_scope:
+            self.download_scope = scope
+            self.download_export = self.download_error = self.download_error_key = ''
+
     def prepare_download_list(self):
+        if self.download_scope == 'image':
+            return
         if self.controller.busy or self.importer.busy or self.cleaner.busy:
             return
         if (self.controller.state.get('plan', {}).get('download_files_verified')
@@ -361,12 +373,14 @@ class Session:
     def export_downloads(self, folder):
         """The dialog shows a worded error; nothing raises into a traceback."""
         self.download_export = self.download_error = self.download_error_key = ''
-        if self.controller.busy or self.controller.state.get('status') != 'review':
+        image = self.download_scope == 'image'
+        if not image and (self.controller.busy or self.controller.state.get('status') != 'review'):
             self.download_error = self.t('Wait for the file check to finish.', '请等待文件检查完成。')
             return
         preferences = download_preferences(self.engine_root() / 'download-settings.json')
         try:
-            self.download_export = export_download_list(self.controller.state.get('plan', {}), folder, preferences['source'])
+            self.download_export = (export_image_download_list(folder, preferences['source'], self._image_location()[0]) if image else
+                                    export_download_list(self.controller.state.get('plan', {}), folder, preferences['source']))
         except DownloadListError as error:
             self.download_error_key = error.key
             reason = ''
@@ -376,7 +390,8 @@ class Session:
                 from .failure_details import redacted_launcher_error
                 print('Download list export failed (%s): %s' % (error.reason, redacted_launcher_error(error.original_error)),
                       file=sys.stderr)
-            self.download_error = self.t(*DOWNLOAD_COPY['error_' + error.key]).format(reason=reason)
+            texts = dict(DOWNLOAD_COPY, error_changed=IMAGE_COPY['error_changed']) if image else DOWNLOAD_COPY
+            self.download_error = self.t(*texts['error_' + error.key]).format(reason=reason)
 
     def use_downloaded_folder(self, folder):
         if not self.can_manage():
@@ -388,6 +403,12 @@ class Session:
         self.prepare_download_list()
 
     def downloads_view(self):
+        if self.download_scope == 'image':
+            zh, decimal_sizes = self.language.startswith('zh'), sys.platform == 'darwin'
+            key = (zh, decimal_sizes)
+            if self._image_download_view is None or self._image_download_view[0] != key:
+                self._image_download_view = (key, image_download_view(zh, decimal_sizes=decimal_sizes))
+            return self._image_download_view[1]
         row = self.controller.state
         plan = row.get('plan', {}) if row.get('status') == 'review' else {}
         if not plan.get('download_files_verified', True):
@@ -479,6 +500,8 @@ class Session:
         self.persist()
 
     def action(self, name, accepted=False, *, retry=None):
+        if self.action_notice == 'installation_unavailable':
+            self.action_notice = ''
         if name == 'stop':
             self.pending_action = None
             if self.action_notice == 'setup_queued':
@@ -557,7 +580,11 @@ class Session:
             self.page = 'comfy'; return
         if name == 'launcher' and self.selected:
             if not self.controller.restore({'installation': self.selected}):
-                raise ValueError(self.t('Locate or repair this installation in Setup.', '请在安装设置中重新定位或修复这份安装。'))
+                # A moved, renamed or unplugged folder is expected: go to Setup
+                # with the saved paths filled in instead of a failure card.
+                self.action_notice = 'installation_unavailable'
+                self.page = 'comfy'
+                return
             self.page = 'launcher'
             return
         if name == 'update-engine' and self.selected:
@@ -795,7 +822,8 @@ class Session:
         if self.form['prompt_model'] and self.installation_engine() and self.controller.state.get('status') == 'open' \
                 and not self.controller.busy and not (self.prompt_installer and self.prompt_installer.busy):
             from .prompt_vlm import assets
-            if not assets.ready(self._image_location()[1]):
+            # Without its model list the download cannot start; the tick stays for a later start.
+            if assets.available() and not assets.ready(self._image_location()[1]):
                 self.prompt_model_action('install')
             if self.prompt_installer and self.prompt_installer.busy or assets.ready(self._image_location()[1]):
                 self.form['prompt_model'] = False
@@ -827,7 +855,7 @@ class Session:
         if self.prompt_installer and self.prompt_installer.busy:
             return
         from .prompt_vlm import assets
-        if assets.checking(engine):
+        if assets.checking(engine) or not assets.available():
             return
         if not (self.prompt_installer and self.prompt_installer.root == engine):
             self.prompt_installer = prompt_installer.Installer(engine, busy=self.generating)
@@ -836,7 +864,13 @@ class Session:
     def prompt_model_view(self):
         """The prompt model as a row of the download card and as the suggestion on the home page."""
         from .prompt_vlm import assets
-        spec = assets.catalog()
+        try:
+            spec = assets.catalog()
+        except (OSError, ValueError):
+            # Without its model list the row can neither be described nor offered, but
+            # a missing resource must not take the whole launcher page down with it.
+            return dict(ready=False, checking=False, unavailable=True, total_bytes=0, enough_disk=True, busy=False,
+                        install={}, failure='', downloaded_bytes=0, title=self.t(*NAMES['text']), suggest=False)
         total = sum(row['bytes'] for row in spec['files'])
         engine = self._image_location()[1] if self.installation_engine() else None
         ready = bool(engine) and assets.ready(engine)
@@ -1519,7 +1553,7 @@ class Session:
         view['release_page'] = release_page(self.updater.current) if self.updater else ''
         if self.updater and self.updater.install_failed and view.get('candidate'):
             # The new app did not go in and the old one is back: the reminder says so.
-            view['status'], view['error'] = 'error', 'The update could not be installed.'
+            view['status'], view['error'] = 'error', self.t(*ACTION_COPY['update_install_failed'])
         key = self.update_key()
         view.update(engine=self.engine_update_pending(), current=__version__,
                     current_release=public_details(self.updater.current) if self.updater else self.release_details,

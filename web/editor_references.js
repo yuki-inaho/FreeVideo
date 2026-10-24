@@ -24,7 +24,7 @@ export function createEditorReferences({t, source, size = () => null, error = ()
     const menu = el('div', 'fv-ed-ref-menu'); menu.hidden = true; menu.setAttribute('role', 'menu');
     const picker = el('input'); picker.type = 'file'; picker.accept = 'image/*'; picker.multiple = true; picker.hidden = true;
     root.append(add, chips, menu, picker);
-    let shown = false, continuing = false, busy = false, working = false, opener = null, disposed = false, entries = [], waited = false;
+    let shown = false, continuing = false, busy = false, working = false, uploading = false, opener = null, disposed = false, entries = [], waited = false;
     const active = () => source.rows().map((row, index) => ({row, index})).filter(({row}) => row.enabled !== false);
     const isImage = file => IMAGE.test(file || '');
     // The pictures this part uses: all of them, or the first reference images of a part that continues
@@ -80,7 +80,7 @@ export function createEditorReferences({t, source, size = () => null, error = ()
     };
     async function addFiles(files) {
         if (working) return;
-        working = true; update();
+        working = uploading = true; update();
         let skipped = false;
         try {
             for (const file of files) {
@@ -91,7 +91,7 @@ export function createEditorReferences({t, source, size = () => null, error = ()
             }
             if (skipped && !disposed) notify(t('Could not read this picture. Please choose another one.', '无法读取这张图片，请换一张。'), ['Editor reference images', '剪辑器参考图']);
         } catch (value) { error(value); }
-        finally { working = false; picker.value = ''; update(); }
+        finally { working = uploading = false; picker.value = ''; update(); }
     }
     async function generate() {
         if (working) return;
@@ -151,8 +151,9 @@ export function createEditorReferences({t, source, size = () => null, error = ()
         const isFull = full();
         // While a part is being made the controls stay clickable and say why they do nothing.
         add.disabled = working;
+        add.dataset.uploading = String(uploading);
         add.setAttribute('aria-disabled', String(busy || isFull));
-        add.title = busy ? waitText() : isFull ? fullText() : t('Reference image', '参考图');
+        add.title = uploading ? t('Uploading reference image…', '正在上传参考图…') : busy ? waitText() : isFull ? fullText() : t('Reference image', '参考图');
         chips.replaceChildren(...used().map(entry => {
             const chip = el('button', 'fv-ed-ref-chip'); chip.type = 'button'; chip.disabled = working; chip.setAttribute('aria-disabled', String(busy));
             chip.dataset.role = entry.row.role || 'reference';

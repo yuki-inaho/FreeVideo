@@ -912,7 +912,8 @@ def register():
                 elif row['type'] == 'confirm':
                     if row['state'] == 'asked':
                         item = dict(base, id=row['id'], question=row.get('question'),
-                                    estimate_seconds=row.get('estimate_seconds'), state='asked')
+                                    estimate_seconds=row.get('estimate_seconds'), state='asked',
+                                    **{key: row[key] for key in ('width', 'height', 'seconds') if row.get(key) is not None})
                         fold['asked'][row['id']] = item
                         fold['items'].append(item)
                     elif row['id'] in fold['asked']:
@@ -995,6 +996,8 @@ def register():
                                  or (task_view.get('result') or {}).get('report_id'))
                     value['failures'][identity] = dict(id=identity, kind=kind, status='failed',
                         label=entity.get('title') or entity.get('name'), error=errors.with_reason(error), report_id=report_id)
+            value['abandoned'] = store.abandoned(sid)
+            value['stage'] = store.stage(sid)
             value['current'] = current['id'] if current else None
             if current and current['id'] not in value['jobs']:
                 value['jobs'][current['id']] = chat_card(current, fold)
@@ -1047,9 +1050,24 @@ def register():
         if done is None:
             # Nothing is kept: no agent has connected since FreeVideo started, so nobody would read it.
             return reply({'error': dict(code='not_connected', message='No agent is connected.', retryable=True,
+                                        error_zh='尚未连接 Agent', error_en='No agent is connected.',
                                         details=[], next='Connect an agent in the Autopilot view, then say it again.',
                                         request_id=errors.request_id())}, 409)
         return reply(done[1], done[0])
+
+    @routes.post('/freevideo/agent/chat/abandon')
+    @guarded
+    async def chat_abandon(request):
+        value = await body(request)
+        def write():
+            store = work_sessions()
+            sid = chat_session(store, value.get('session'))
+            if sid is None:
+                raise JobError('not_found', 'No conversation')
+            if not store.abandoned(sid):
+                store.append(sid, dict(type='control', action='abandoned'), by='user')
+            return dict(abandoned=True)
+        return reply(await asyncio.to_thread(write))
 
     @routes.post('/freevideo/agent/chat/confirm')
     @guarded
@@ -1116,6 +1134,7 @@ def register():
         done = await asyncio.to_thread(write)
         if done is None:
             return reply({'error': dict(code='not_connected', message='No agent is connected.', retryable=True,
+                                        error_zh='尚未连接 Agent', error_en='No agent is connected.',
                                         details=[], next='Connect an agent in the Autopilot view, then try again.',
                                         request_id=errors.request_id())}, 409)
         return reply(done[1], done[0])
@@ -1493,6 +1512,8 @@ def register():
                 raise JobError('forbidden', 'Only the page user may stop or continue')
             if value['action'] == 'stopped':
                 return reply(await stop_session(sid), 201)
+        if by == 'agent' and value['type'] in ('message', 'plan') and sessions.abandoned(sid):
+            raise JobError('turn_abandoned', 'The user gave up on this turn')
         if by == 'agent' and value['type'] == 'message' and isinstance(value.get('text'), str):
             value['text'] = chat_text(value['text'])
         client = session_client(request, by)
@@ -1532,6 +1553,19 @@ def register():
             raise JobError('forbidden', 'Only the page user may continue')
         return reply(await asyncio.to_thread(sessions.append, request.match_info['id'],
             dict(type='control', action='resumed'), by='user'))
+
+    @routes.post(PREFIX + '/sessions/{id}/stage')
+    @guarded
+    async def session_stage(request):
+        if session_caller(request) == 'user':
+            raise JobError('forbidden', 'Only the agent reports a stage')
+        sid, value = request.match_info['id'], await body(request)
+        def write():
+            if sessions.abandoned(sid):
+                raise JobError('turn_abandoned', 'The user gave up on this turn')
+            sessions.report_stage(sid, value['stage'])
+            return dict(stage=value['stage'])
+        return reply(await asyncio.to_thread(write))
 
     def publish_media(work, suffix):
         from . import media

@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 
 from .long_paths import io_path, plain
 
@@ -67,24 +68,54 @@ def view_for(real_root) -> View:
 def for_engine(engine_root) -> View:
     """The view of the offline runtime around this engine folder, if it needs one.
 
-    An installation made online is its engine folder: it gets a view only where the
-    system code page cannot spell its folder, and one that cannot be made is not an error.
+    An installation made online is its engine folder: it gets a view only where the system
+    code page cannot spell its folder or its deepest library is beyond the loader's limit,
+    and one that cannot be made is not an error.
     """
     from . import runtime_alias
     engine = Path(plain(engine_root))
-    if engine.name.casefold() == ONLINE_ENGINE:
-        try:
-            return view_for(engine) if runtime_alias.needs_view(engine, spelling_only=True) else View(engine, engine)
-        except OSError:  # Includes a junction that cannot be made: the checks after it name what fails.
-            return View(engine, engine)
     root = engine.parent
     # The first two tests read nothing from disk wherever no junction is needed.
     # The third asks by the extended path: where a junction is needed, the plain
     # one is not found beyond 259 characters.
-    if (engine.name.casefold() != 'engine' or not runtime_alias.needs_view(root)
-            or not io_path(root / 'portable.json').is_file()):
+    if (engine.name.casefold() == 'engine' and runtime_alias.needs_view(root)
+            and io_path(root / 'portable.json').is_file()):
+        return view_for(root)
+    if engine.name.casefold() == 'engine':
         return View(engine, engine)
-    return view_for(root)
+    try:
+        # An installation made online is its engine folder. It gets a view where the system code
+        # page cannot spell the folder or the loader cannot open its deepest library; one that
+        # cannot be made is not an error.
+        if runtime_alias.needs_view(engine, spelling_only=True) or runtime_alias.online_loaded_too_long(engine):
+            return view_for(engine)
+    except OSError:  # Includes a junction that cannot be made: the checks after it name what fails.
+        pass
+    return View(engine, engine)
+
+
+def restart_arguments(arguments, prefix=None, environ=None):
+    """The command line and environment that run this command again from the engine's short folder.
+
+    None where the process is not an engine's own Python on Windows, already runs from a
+    short folder, or its folder needs none. A command-line run reaches the libraries
+    (torch\\lib\\c10.dll) by the interpreter's own path, so only a restart can shorten it.
+    """
+    from . import runtime_alias
+    environ = os.environ if environ is None else environ
+    if not runtime_alias._backend.windows() or current(environ) is not None:
+        return None
+    prefix = Path(plain(sys.prefix if prefix is None else prefix))
+    if prefix.parent.name.casefold() != 'envs':
+        return None
+    try:
+        view = for_engine(prefix.parent.parent)
+    except OSError:
+        return None
+    if not view.used:
+        return None
+    command, child, _ = execution([sys.executable, '-m', 'freevideo_engine', *arguments], environ, None, view)
+    return command, child
 
 
 def for_file(path):

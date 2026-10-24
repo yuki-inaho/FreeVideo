@@ -31,6 +31,9 @@ HOLD_SECONDS = 90.
 AGENT_HOLD_SECONDS = 30.
 OTHER_GPU_GROWTH = 512 * 2**20
 HOST_FLOOR = 4 * GiB
+# Below this much host memory (free plus the idle worker's own), a kept worker's
+# base leaves the next part less room than a fresh one; measured on 16 GiB.
+KEEP_MIN_HOST = 24 * GiB
 RELEASE_LOG = 20
 
 
@@ -382,7 +385,7 @@ class SessionOwner:
             hold = min(HOLD_SECONDS, AGENT_HOLD_SECONDS) if agent else HOLD_SECONDS
             if not next_part or hold <= 0:
                 return self.release('finished' if not next_part else 'no_hold')
-            reason = pressure(gpu, None)
+            reason = pressure(gpu, None) or self._tight()
             if reason:
                 return self.release(reason)
             self.generation += 1
@@ -391,6 +394,21 @@ class SessionOwner:
             threading.Thread(target=self._watch, args=(self.generation, self.idle_since, hold, gpu, baseline),
                              name='freevideo-resident-hold', daemon=True).start()
             return self.record(action='kept', reason=next_part, seconds=hold, pid=self.process.pid)
+
+    def _tight(self):
+        from .system import windows
+        if windows():
+            # Windows keeps its earlier behaviour: the available-memory reading
+            # here has not been checked against its commit accounting.
+            return None
+        try:
+            from .background_room import available_memory
+            own = worker_memory(self.process.pid).get('worker_rss_bytes', 0)
+            if available_memory() + own < KEEP_MIN_HOST:
+                return 'host_memory_tight'
+        except (OSError, RuntimeError, AttributeError, ValueError, ImportError):
+            pass
+        return None
 
     def _watch(self, generation, since, hold, gpu, baseline):
         while True:

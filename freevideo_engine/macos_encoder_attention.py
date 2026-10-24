@@ -13,7 +13,7 @@ FULL_ATTENTION_MAX_BYTES = 640 * 2**20
 SLICE_WORKING_BYTES = 256 * 2**20
 
 
-def slice_plan(tokens, heads, dim, kv_heads=None):
+def slice_plan(tokens, heads, dim, kv_heads=None, pool=1):
     """Pinned batch-one FP32 contract; include full output and both tile outputs.
 
     GQA visits one KV head's query heads at a time, with zero-stride KV views.
@@ -30,17 +30,17 @@ def slice_plan(tokens, heads, dim, kv_heads=None):
     output_bytes = tokens * heads * dim * 4
     per_row = 2 * group_heads * (tokens + dim) * 4
     # Even if a whole GQA group fits, large calls still split the query axis.
-    rows = min((tokens + 1) // 2, max(1, (SLICE_WORKING_BYTES - output_bytes) // per_row))
+    rows = min((tokens + 1) // 2, max(1, (SLICE_WORKING_BYTES * pool - output_bytes) // per_row))
     return dict(query_rows=rows, head_groups=groups,
                 slice_working_bytes=output_bytes + rows * per_row,
                 minimum_slice_bytes=output_bytes + per_row)
 
 
-def plan(tokens, heads, dim, kv_heads=None):
+def plan(tokens, heads, dim, kv_heads=None, pool=1):
     kv_heads = heads if kv_heads is None else kv_heads
-    selected = slice_plan(tokens, heads, dim, kv_heads)
+    selected = slice_plan(tokens, heads, dim, kv_heads, pool)
     full_bytes = heads * tokens * tokens * 4
-    full = full_bytes <= FULL_ATTENTION_MAX_BYTES
+    full = full_bytes <= FULL_ATTENTION_MAX_BYTES * pool
     if full:
         selected.update(query_rows=tokens, head_groups=1, slice_working_bytes=None)
     return dict(tokens=tokens, heads=heads, kv_heads=kv_heads, head_dim=dim,
@@ -99,7 +99,7 @@ def sliced_basic(q, k, v, heads, rows, basic, *, mask=None, skip_reshape=True, e
     return output
 
 
-def install(clip):
+def install(clip, pool_bytes=None):
     """Return shared dispatch statistics and removable instance hooks.
 
     Counts are attempts/planned basic invocations, not successful completions.
@@ -113,16 +113,18 @@ def install(clip):
             or any((m.num_heads, m.head_dim) != (16, 72) for m in vision)
             or any((m.num_heads, m.num_kv_heads, m.head_dim) != (64, 8, 128) for m in language)):
         raise ValueError('Expected the pinned H3 vision and language attention geometry')
-    stats = dict(full_calls=0, sliced_calls=0, slices=0, plans=[],
-                 full_attention_max_bytes=FULL_ATTENTION_MAX_BYTES,
-                 slice_working_bytes=SLICE_WORKING_BYTES,
+    from .macos_encoder_linear import pool_scale
+    pool = pool_scale(pool_bytes)
+    stats = dict(pool_scale=pool, full_calls=0, sliced_calls=0, slices=0, plans=[],
+                 full_attention_max_bytes=FULL_ATTENTION_MAX_BYTES * pool,
+                 slice_working_bytes=SLICE_WORKING_BYTES * pool,
                  kernel='Comfy attention_basic: einsum, scale, additive mask, softmax, einsum; FP32')
     seen = set()
 
     def attention(q, k, v, heads, *, mask=None, skip_reshape=False, enable_gqa=False):
         if q.device.type != 'mps' or not skip_reshape:
             raise ValueError('Bounded native encoder attention requires MPS and pre-shaped heads')
-        selected = plan(q.shape[2], heads, q.shape[3], k.shape[1])
+        selected = plan(q.shape[2], heads, q.shape[3], k.shape[1], pool)
         stats['sliced_calls'] += 1
         stats['slices'] += ((q.shape[2] + selected['query_rows'] - 1) // selected['query_rows']
                            * selected['head_groups'])
@@ -136,7 +138,7 @@ def install(clip):
             x = args[0] if args else kwargs['x' if kind == 'vision' else 'hidden_states']
             tokens = x.shape[0] if kind == 'vision' else x.shape[1]
             selected = plan(tokens, module.num_heads, module.head_dim,
-                            module.num_heads if kind == 'vision' else module.num_kv_heads)
+                            module.num_heads if kind == 'vision' else module.num_kv_heads, pool)
             key = (kind, tokens)
             if key not in seen:
                 seen.add(key)

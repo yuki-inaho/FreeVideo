@@ -6,6 +6,7 @@ import re
 import sys
 
 from .long_paths import io_path, plain_text
+from .locking import ENGINE_BUSY
 from .diagnostics import Redactor
 from .tiers import STEP_CACHES, TIERS, on_mac, table_level
 from .two_pass import SCALES
@@ -13,6 +14,11 @@ from .two_pass import SCALES
 
 STEP_OUTPUT = '\n\nFull step output:\n'
 QUALITY_LEVELS = (('Light', '轻量'), ('Medium', '标准'), ('High', '精细'), ('Max', '极致'))  # tiers.TIERS order
+ENGINE_BUSY_TITLE = ('FreeVideo is busy with another task', 'FreeVideo 正在处理另一个任务')
+ENGINE_BUSY_DETAIL = (
+    'Try again when it finishes. If nothing else is running, close duplicate FreeVideo instances, then try again.',
+    '请在它完成后重试。若没有其他任务在进行，请关闭重复运行的 FreeVideo 后重试。',
+)
 
 
 IMAGE_PACK_FAILURES = {
@@ -142,7 +148,17 @@ def display_launcher_error(value, *, zh=False, replacements=()):
     from .offline_errors import alias_failure, guidance
     if alias_failure(value):
         return guidance('runtime-alias', zh)
-    return redacted_launcher_error(value, replacements)
+    text = redacted_launcher_error(value, replacements)
+    if zh:
+        text = re.sub(r'Missing curl, needed for downloads and proxy connections\. '
+                      r'(In a terminal, run: ([^\r\n]+?), then check again\.|'
+                      r'Ask your administrator to install curl, then check again\.)'
+                      r'( You can also run \./setup\.sh in the source folder\.)?',
+                      lambda match: '缺少 curl，下载和代理连接需要它。' +
+                      ('请在终端运行：' + match.group(2) + '，然后重新检查。' if match.group(2) else
+                       '请管理员安装 curl，然后重新检查。') +
+                      ('也可以在源码目录运行 ./setup.sh。' if match.group(3) else ''), text)
+    return text
 
 
 def setup_command_failure(label, log, exit_code):
@@ -354,6 +370,12 @@ def launcher_failure(value, *, zh=False, other_disk=False, disk_name='', can_rep
     if not value:
         return dict(title='', detail='', action='', kind='')
     text = _without_ready_curl_diagnostics(str(value))
+    # Match only the cause position, never an echoed input or a log line below it.
+    causes = [line.strip() for line in text.splitlines() if line.strip()]
+    index = 1 if causes and re.fullmatch(r'FreeVideo generation failed(?: \(exit -?\d+\))?', causes[0]) else 0
+    cause = re.sub(r'^(?:[A-Za-z_][\w.]*(?:Error|Exception)):\s*', '', causes[index]) if len(causes) > index else ''
+    if cause == ENGINE_BUSY:
+        return dict(title=ENGINE_BUSY_TITLE[zh], detail=ENGINE_BUSY_DETAIL[zh], action='', kind='engine-busy')
     from .offline_errors import alias_failure, guidance
     if alias_failure(text):
         return dict(title=guidance('title', zh), detail=guidance('runtime-alias', zh),
@@ -531,6 +553,10 @@ def launcher_failure(value, *, zh=False, other_disk=False, disk_name='', can_rep
          ('If this computer has an NVIDIA graphics card, install NVIDIA driver 580 or newer, '
           'restart the computer, then click Retry installation.',
           '如果这台电脑有 NVIDIA 显卡，请安装 580 或更新版本的 NVIDIA 显卡驱动，重启电脑后点击“重试安装”。')),
+        (r'NVIDIA driver [\w.]+(?: \([^)]*\))? is older than 580', 'gpu-driver-old',
+         ('The NVIDIA driver is too old', 'NVIDIA 显卡驱动版本过低'),
+         ('Update the NVIDIA driver to version 580 or newer, restart the computer, then click "Retry installation".',
+          '请将 NVIDIA 显卡驱动更新到 580 或更新版本，重启电脑后点击“重试安装”。')),
         (r'CUDA_ARCH_UNSUPPORTED', 'gpu-architecture',
          ('This GPU lacks the required compute support', '这张显卡不满足当前计算要求'),
          ('The detected GPU and compute capability are shown below. The CUDA runtime requires native BF16 computation (SM80 or newer). Use a compatible GPU; changing the driver does not change its hardware capability.',
@@ -555,6 +581,10 @@ def launcher_failure(value, *, zh=False, other_disk=False, disk_name='', can_rep
          ('A video is still generating', '还有视频正在生成'),
          ('The update is installed. Click Connect again after the job finishes to restart ComfyUI with it.',
           '更新已装好。等当前任务完成后点“重新连接”，ComfyUI 会重启并使用新版。')),
+        (r'WinError 206|The filename or extension is too long', 'path-too-long',
+         ("The installation folder's path is too long", '安装文件夹的路径太长'),
+         ('Install FreeVideo in a folder with a shorter path, such as D:\\FreeVideo, then click "Retry installation".',
+          '请把 FreeVideo 安装到路径较短的文件夹，例如 D:\\FreeVideo，然后点击“重试安装”。')),
         (r'Installation paused: Windows commit headroom', 'memory-commit',
          ('Windows is low on available memory', 'Windows 可用内存不足'),
          ('Close memory-heavy applications, then retry. Downloaded files are retained.',
@@ -570,6 +600,10 @@ def launcher_failure(value, *, zh=False, other_disk=False, disk_name='', can_rep
         (r'No space left on device|WinError 112|disk (?:is )?full|Not enough disk space|Insufficient disk space', 'disk',
          ('Not enough disk space', '磁盘空间不足'),
          ('Free up space on the installation drive, then retry.', '清理安装盘空间后，点击重试。')),
+        (r'Could not reach the pinned prepared model sources', 'model-source',
+         ('The model download sources cannot be reached', '无法连接模型下载源'),
+         ('Check your network or proxy, or change the source or connection mode, then retry.',
+          '请检查网络或代理，或切换下载源、连接模式后重试。')),
         (r'Model download paused|unexpected-transfer-size|ConnectionError|ConnectTimeout|ReadTimeout|HTTP probe failed|Could not resolve host|SSL certificate|Every download source failed|All Git sources failed|All package sources failed|Python download failed on every route', 'download',
          ('Download interrupted', '下载中断了'),
          ('Check your network or change the source or connection mode in Settings → Downloads, then retry.', '检查网络，或在“设置 → 下载”中切换下载源、连接模式后重试。')),
@@ -606,11 +640,33 @@ def launcher_failure(value, *, zh=False, other_disk=False, disk_name='', can_rep
          ('Memory is unavailable for this step', '这一步可用内存不足'),
          ('Close other memory-heavy applications and retry. Copy the details if it continues.', '关闭占用内存较多的程序后重试；仍失败时可复制详情反馈。')),
     )
+    if re.search(r'Installation crossed its RAM budget', text):
+        # Only the installer's memory monitor says this. The sentence carries the amount; an
+        # older retained error does not, and then the card names none.
+        free = re.search(r'At least ([\d.]+) GiB of RAM must be free', text)
+        if free:
+            action = ('Close other applications until at least %s GiB of RAM is free, then click "Retry installation". Downloaded files are retained.' % free.group(1),
+                      '请关闭其他程序，直到至少有 %s GiB 内存空闲，然后点击“重试安装”。已下载的文件会保留。' % free.group(1))
+        else:
+            action = ('Close other applications to free memory, then click "Retry installation". Downloaded files are retained.',
+                      '请关闭其他程序以空出内存，然后点击“重试安装”。已下载的文件会保留。')
+        return dict(title=('There is not enough free memory to continue installing', '可用内存不足，无法继续安装')[zh],
+                    detail='', action=action[zh], kind='memory-budget')
     for pattern, kind, title, action in rules:
         if re.search(pattern, text, re.I):
             if kind in WITHOUT_REPAIR and not can_repair:
                 action = WITHOUT_REPAIR[kind].get(unavailable) or WITHOUT_REPAIR[kind].get('none', WITHOUT_REPAIR_NONE)
-            return dict(title=title[zh], detail='', action=action[zh], kind=kind)
+            detail = ''
+            if kind == 'gpu-driver-old':
+                version, model = re.search(r'NVIDIA driver ([\w.]+)(?: \(([^)]*)\))? is older than 580', text, re.I).groups()
+                if model:
+                    detail = ('检测到：%s，驱动 %s' if zh else 'Detected: %s, driver %s') % (model, version)
+                else:
+                    detail = ('当前驱动版本：' if zh else 'Installed driver: ') + version
+                # The launcher's failure card shows the action only when there is no detail, so the
+                # instruction goes under the detected driver instead of being hidden by it.
+                return dict(title=title[zh], detail=detail + '\n' + action[zh], action='', kind=kind)
+            return dict(title=title[zh], detail=detail, action=action[zh], kind=kind)
     # Validation messages are already actionable. Show the cause, not a stack
     # trace or a guessed hardware diagnosis, and leave long details expandable.
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -619,8 +675,38 @@ def launcher_failure(value, *, zh=False, other_disk=False, disk_name='', can_rep
         if not line.startswith(('File ', 'Traceback', '^', 'All files retained.', 'Rerun the same setup command'))), '')
     detail = re.sub(r'^(?:ValueError|RuntimeError|OSError):\s*', '', detail)
     from .launcher_copy import lan_error
-    return dict(title='暂时未能完成' if zh else 'Couldn’t complete this step',
-                detail=lan_error(detail, zh), action='', kind='unknown')
+    title = '暂时未能完成' if zh else 'Couldn’t complete this step'
+    # The cause line is the last error line, which a traceback or pip's "ERROR:" can displace; the
+    # failed step's own line is found anywhere in the text.
+    step = re.search(r'^Failed step: ([\w.-]+) \(exit code (-?\w+)\)', text, re.M)
+    if step:
+        # The internal step id never reaches the card; the exit code stays as the detail.
+        name = _step_name(step.group(1), zh)
+        if name:
+            title = ('“%s”这一步没有完成' if zh else 'The step "%s" did not finish') % name
+        detail = ('退出码 %s' if zh else 'Exit code %s') % step.group(2)
+    # A message the launcher raised itself (a ValueError) is the next step already.
+    unexpected = 'Traceback' in text and not re.match(r'(?:[\w.]+\.)?ValueError:', causes[-1] if causes else '')
+    detail = lan_error(detail, zh)
+    if step or unexpected:
+        # The launcher's failure card shows the action only when there is no detail, so the next
+        # step goes under the detail rather than being hidden by it.
+        return dict(title=title, detail=(detail + '\n' if detail else '') + UNKNOWN_NEXT_STEP[zh], action='', kind='unknown')
+    return dict(title=title, detail=detail, action='', kind='unknown')
+
+
+UNKNOWN_NEXT_STEP = ('Try again. If it fails again, export the report, then use "Report a problem" and attach it.',
+                     '请重试。仍然失败时，请先导出报告，再点“提交问题”并附上报告。')
+
+
+def _step_name(label, zh):
+    """The name the progress card showed for a setup step, in the interface language, or ''."""
+    try:
+        from .bootstrap import setup_task
+        from .launcher_copy import display
+        return display(setup_task(label)[0], zh)
+    except Exception:
+        return ''
 
 
 def _read(path, limit, *, tail=False):
@@ -666,6 +752,20 @@ def _checkpoint_change(report):
     return ''
 
 
+# Labels of the resource-planning snapshots (generate.py), never stages of the run.
+SNAPSHOT_LABEL = re.compile(r'(?:before|after)-encoding|retry-\d+')
+
+
+def _attempt_phase(report):
+    """The stage the last failed video attempt stopped in, or ''."""
+    attempts = report.get('resource_attempts')
+    for row in reversed(attempts) if isinstance(attempts, list) else ():
+        phase = row.get('phase') if isinstance(row, dict) and row.get('failure') else None
+        if isinstance(phase, str) and re.fullmatch(r'[a-z_]{1,32}', phase) and phase not in ('unknown', 'complete'):
+            return phase
+    return ''
+
+
 # Stands in for the repair sentence until the report text is redacted: the
 # redactor reads "Install / repair" as a path.
 REPAIR_MARK = 'FREEVIDEO_REPAIR_SENTENCE'
@@ -687,6 +787,13 @@ def runtime_explanation(run, repair=None):
     return _runtime_explanation(_report(run), repair)
 
 
+# A traceback's final line names the error at the start of the line; the one a parent
+# process raises about its failed child only repeats the exit code.
+CHILD_ERROR = re.compile(r'[\w.]*(?:Error|Exception|OutOfMemory\w*)\b')
+WRAPPING_ERROR = re.compile(r'(?:subprocess\.)?CalledProcessError\b')
+ANSI = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))')
+
+
 def generation_failure(run, exit_code=None, *, repair=None):
     """Surface the cause, including a child traceback, even without a report.
 
@@ -700,6 +807,11 @@ def generation_failure(run, exit_code=None, *, repair=None):
     lines = ['FreeVideo generation failed' + (' (exit %s)' % exit_code if exit_code is not None else '')]
     report = _report(run)
     redactor.structured(report)  # Collect prompt values without showing the request.
+    # Read the whole bounded log, not a tail that could hide other output.
+    # A legacy managed failure has exactly this one nonempty line and exit 1.
+    if exit_code == 1 and [line for line in _read(run / 'generate.log', 8192).splitlines()
+                           if line.strip()] == [ENGINE_BUSY]:
+        lines.append(ENGINE_BUSY)
     # What the worker found when cuDNN refused its own files, ahead of the trace.
     explained = _runtime_explanation(report, REPAIR_MARK)
     if explained:
@@ -714,13 +826,21 @@ def generation_failure(run, exit_code=None, *, repair=None):
     encoding_failure = report.get('encoding_failure')
     phase = encoding_failure.get('phase') if isinstance(encoding_failure, dict) else None
     phase = phase or report.get('phase')
+    snapshot = None
+    if isinstance(planning, list) and planning and isinstance(planning[-1], dict):
+        snapshot = planning[-1].get('stage')
+    if isinstance(phase, str) and SNAPSHOT_LABEL.fullmatch(phase):
+        # A planning label is where the resources were last read, not where the run stopped.
+        snapshot, phase = snapshot or phase, None
+    phase = phase or _attempt_phase(report)
+    if not phase and (snapshot or report.get('resource_attempts')):
+        phase = 'generation'
     if phase:
         lines.append('Stage: ' + str(phase))
     if isinstance(planning, list) and planning and isinstance(planning[-1], dict):
         last = planning[-1]
-        if not phase:
-            lines.append('Stage: ' + str(last.get('stage', 'unknown')))
-        lines.append('\nLast resource-planning snapshot (before this failure; not the stopping sample):')
+        lines.append('\nLast resource-planning snapshot (%s, before this failure; not the stopping sample):'
+                     % (re.sub(r'[^a-z0-9-]', '', str(snapshot))[:32] or 'unlabeled'))
         state = last.get('idle_cache') or {}
         accounting = state.get('ram_accounting', {}) if isinstance(state, dict) else {}
         if not isinstance(accounting, dict):
@@ -744,14 +864,25 @@ def generation_failure(run, exit_code=None, *, repair=None):
             lines.append('Idle cache release: ' + str(recovery.get('reason', recovery) if isinstance(recovery, dict) else recovery))
     # Child logs carry the actual CUDA/encoder error when the parent only knows
     # an exit code. Read bounded tails; do not read model data or entire logs.
+    causes, known = [], redactor.text('\n'.join(lines))[:300]
     for name in ('generate.log', 'video.engine.log', 'video.encoding.log'):
         value = _read(run / name, 8192, tail=True)
         if not value:
             continue
+        # Redact the whole tail first: a prompt or credential is only recognized in full.
+        value = redactor.text(value)
         rows = [line for line in value.splitlines() if line.strip() and not line.lstrip().startswith('{"event":')]
         trace = '\n'.join(rows[-45:])
+        causes += [line for line in (ANSI.sub('', row) for row in rows)
+                   if CHILD_ERROR.match(line) and not WRAPPING_ERROR.match(line)]
         if trace:
             lines.extend(['\n' + name + ':', trace])
+    # A long child traceback pushes its own last line out of a shortened copy of this text
+    # (the report's error already holds the log's end), so the error it ends with also
+    # stands near the top unless the text starts with it. It is taken from the redacted tails.
+    promoted = bool(causes) and causes[-1] not in known
+    if promoted:
+        lines.insert(1, 'Cause: ' + causes[-1][:300])
     if len(lines) == 1:
         lines.append('The worker ended without a readable error report.')
     lines.append('\nRetained outputs: ' + str(run))
@@ -769,7 +900,8 @@ def generation_failure(run, exit_code=None, *, repair=None):
         from .runtime_libraries import REINSTALL
         value = value.replace(REPAIR_MARK, repair or REINSTALL, 1)
     value = re.sub(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))', '', value)
-    return re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', value)
+    value = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', value)
+    return value
 
 
 def startup_failure(message, log, *, exit_code=None, context=None):

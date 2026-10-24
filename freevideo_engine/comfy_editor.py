@@ -844,6 +844,7 @@ def list_imports(root):
                 fields = ('id', 'name', 'kind', 'state', 'fraction', 'reason', 'frames', 'fps', 'width', 'height',
                           'preview_width', 'preview_height', 'has_audio')
                 row = {k: value.get(k) for k in fields}
+                row['started'] = bool(value.get('started'))
                 for side in ('width', 'height'):
                     row['preview_' + side] = value.get('preview_' + side, value.get(side))
                 row['preview'] = '/freevideo/editor/media?' + urlencode(dict(id=child.name, file='preview')) if value['state'] == 'ready' else None
@@ -929,7 +930,7 @@ def transcode(root, identity):
             if vin is None and ain is None:
                 raise ValueError('No media')
             kind = 'video' if vin is not None else 'audio'
-            _import_update(root, identity, kind=kind)
+            _import_update(root, identity, kind=kind, started=True)
             seconds = max((clip_seconds(reader, s) or 0 for s in (vin, ain) if s is not None), default=0)
             origin = Fraction(vin.start_time or 0) * vin.time_base if vin is not None else Fraction(ain.start_time or 0) * ain.time_base
             with av.open(str(partial), 'w', format='mp4' if vin is not None else 'ipod', options={'movflags': 'faststart'}) as writer:
@@ -1055,9 +1056,11 @@ class ImportManager:
     def prepare(self, identity):
         try:
             transcode(self.root, identity)
-        except Exception:
+        except Exception as error:
+            # A full disk is not the file's fault, so the page says so instead of listing formats.
+            reason = _disk_full(error).get('reason', 'unreadable')
             try:
-                _import_update(self.root, identity, state='failed', reason='unreadable')
+                _import_update(self.root, identity, state='failed', reason=reason)
             except (OSError, ValueError):
                 pass  # The terminal snapshot is retained and retried by the worker/reads.
 

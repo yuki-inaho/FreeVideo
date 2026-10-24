@@ -17,7 +17,36 @@ def curl_executable(env=None):
         from .curl_windows import inspect
         return inspect(env)['selected']
     found = shutil.which('curl', path=env.get('PATH', os.defpath))
-    return str(Path(found).absolute()) if found else None
+    if found:
+        return str(Path(found).absolute())
+    from .linux_bundle import frozen_linux, bundle_directory
+    if frozen_linux():
+        bundled = bundle_directory() / 'curl/curl'
+        if bundled.is_file() and os.access(bundled, os.X_OK):
+            return str(bundled)
+    return None
+
+
+def curl_ca_arguments(executable, env=None):
+    """Use desktop trust roots for bundled curl, with its embedded Mozilla CA fallback.
+
+    Leave system curl and explicit certificate settings alone. In particular,
+    corporate proxy roots installed by the administrator must remain usable.
+    The static binary needs neither libssl nor LD_LIBRARY_PATH from the bundle.
+    """
+    from .linux_bundle import frozen_linux, bundle_directory
+    if not frozen_linux() or Path(executable) != bundle_directory() / 'curl/curl':
+        return []
+    env = os.environ if env is None else env
+    if any(env.get(name) for name in ('CURL_CA_BUNDLE', 'SSL_CERT_FILE', 'SSL_CERT_DIR')):
+        return []
+    for name in ('/etc/ssl/certs/ca-certificates.crt',  # Debian / Ubuntu
+                 '/etc/pki/tls/certs/ca-bundle.crt',  # Fedora / RHEL
+                 '/etc/ssl/ca-bundle.pem'):  # openSUSE
+        if Path(name).is_file():
+            # An https:// proxy is verified separately from the target server.
+            return ['--cacert', name, '--proxy-cacert', name]
+    return []  # curl 8.22.0's verified, embedded CA bundle.
 
 
 def missing_curl_message(env=None):
@@ -26,7 +55,14 @@ def missing_curl_message(env=None):
         return failure_message(inspect(env))
     if platform.system() == 'Darwin':
         return 'macOS curl was not found. Check /usr/bin/curl and reopen FreeVideo with curl available in PATH.'
-    return 'Missing curl for bounded downloads and HTTP/SOCKS proxy support. Run ./setup.sh to install it.'
+    env = os.environ if env is None else env
+    command = linux_tools_command(['curl'], which=lambda name: shutil.which(name, path=env.get('PATH', os.defpath)))
+    message = 'Missing curl, needed for downloads and proxy connections. %s, then check again.' % (
+        'In a terminal, run: ' + command if command else 'Ask your administrator to install curl')
+    source = source_root()
+    if source is not None and Path.cwd().resolve() == source and (source / 'setup.sh').is_file():
+        message += ' You can also run ./setup.sh in the source folder.'
+    return message
 
 
 def linux_tools_command(names, which=shutil.which, root=None):

@@ -191,13 +191,17 @@ def create_ui(session, *, show=True):
             if path:
                 self.invoke(session.add_folder, path) if key == 'model_dirs' else self.invoke(session.edit, key, path)
 
+        @Slot(str)
+        def setDownloadScope(self, scope):
+            self.invoke(session.set_download_scope, scope)
+
         @Slot()
         def prepareDownloadList(self):
             self.invoke(session.prepare_download_list)
 
         @Slot()
         def exportDownloadList(self):
-            if session.controller.busy:
+            if session.controller.busy and session.download_scope != 'image':
                 return
             path = QFileDialog.getExistingDirectory(None, session.downloads_view()['copy']['export'], '', QFileDialog.ShowDirsOnly)
             if path:
@@ -294,10 +298,13 @@ def create_ui(session, *, show=True):
         @Slot(str, str)
         def reportProblem(self, error, title):
             from . import __version__
-            from .launcher_issue import issue_url
+            from .launcher_issue import environment_line, issue_url, machine_hardware, product_version
             from .windows_ux import open_browser
-            url = issue_url(error, session.installed_product_version() or __version__, title,
-                            zh=session.language.startswith('zh'))
+            # The release (0.4.x) is named, not the build number; only fields that carry no path or user name travel.
+            version = session.installed_product_version() or product_version(__version__)
+            engine = session.installation_engine()
+            url = issue_url(error, version, title, zh=session.language.startswith('zh'),
+                            environment=environment_line(version, machine_hardware(engine) if engine else {}))
             self.invoke(open_browser, url)
 
         @Slot()
@@ -419,6 +426,16 @@ def smoke_test(app, engine, window, bridge, destination):
     try:
         payload = check_launcher_payload(session.source, destination)
         payload['reopen'] = check_launcher_reopen(destination)
+        from .linux_bundle import frozen_linux, child_environment
+        if frozen_linux():
+            import subprocess
+            from .network import curl_command
+            command = curl_command(5)
+            version = subprocess.run([command[0], '--version'], env=child_environment(),
+                                     capture_output=True, text=True, timeout=10, check=True).stdout
+            if 'https' not in version:
+                raise RuntimeError('Packaged curl lacks HTTPS support')
+            payload['curl'] = dict(executable=command[0], version=version.splitlines()[0])
         from PySide6.QtQuick import QQuickItem
         for page in ('comfy', 'models', 'progress', 'launcher'):
             session.page = page

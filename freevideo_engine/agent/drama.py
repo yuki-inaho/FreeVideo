@@ -45,7 +45,6 @@ EXAMPLE = {
          'lines': [{'who': 'lin', 'line': '再见了。', 'how': 'says softly'}],
          'sound': 'The hum of the subway, rain tapping on glass.'},
     ],
-    'music': 'A sparse, slow piano figure over soft sustained strings.',
     'review': {'min_score': 7, 'retakes': 1, 'frames': 6},
     'transition': 'crossfade', 'transition_seconds': .4,
 }
@@ -258,7 +257,8 @@ def prompt(play, shot):
         scene = ' '.join(shot.get(k) or '' for k in ('framing', 'action', 'camera')) + ' ' + (play.get('style') or '')
         parts.append('No subtitles or captions.' if SHOWN_TEXT.search(scene) else 'No subtitles, no on-screen text.')
     sound = shot.get('sound') or 'Natural ambience of the scene.'
-    music = shot.get('music') or play.get('music') or 'N/A'
+    # Only a shot's own music is written; a score for the whole film is imported and laid on the sound track.
+    music = shot.get('music') or 'N/A'
     return ('integrated_multimodal_description: ' + ' '.join(p for p in parts if p) +
             '\n\noverall_soundscape: ' + sound + '\n\nnon_diegetic_music: ' + music)
 

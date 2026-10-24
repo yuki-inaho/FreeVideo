@@ -19,6 +19,11 @@ BACKFILL_MARKER = '.workflow-backfill.json'
 BACKUP_NAME = 'video.before-workflow.mp4'
 
 
+def _room(path, size):
+    """A rewrite needs the copy and the backup beside the original, plus some headroom."""
+    return disk_space.free_bytes(path.parent) >= 2 * size + 512 * 1024 * 1024
+
+
 def embed_comfy_metadata(path, *, prompt=None, workflow=None, backup=None):
     """Rewrite the MP4 at `path` with the graph in its metadata, copying the
     streams. The new file replaces the original only after every audio and video
@@ -38,7 +43,7 @@ def embed_comfy_metadata(path, *, prompt=None, workflow=None, backup=None):
         if backup is not None and backup.exists():
             logging.info('FreeVideo left %s unchanged: %s already exists.', path, backup.name)
             return False
-        if disk_space.free_bytes(path.parent) < 2 * size + 512 * 1024 * 1024:
+        if not _room(path, size):
             logging.info('FreeVideo left %s unchanged: not enough free disk space.', path)
             return False
         # faststart puts moov, and with it the metadata, before the media data.
@@ -147,7 +152,7 @@ def backfill(output_directory, *, stop=None):
             rows.setdefault(json.loads(row.read_text(encoding='utf-8'))['id'], []).append(row)
         except (OSError, ValueError, KeyError, TypeError):
             continue
-    counts = dict(embedded=0, skipped=0, pending=0, failed=0)
+    counts = dict(embedded=0, skipped=0, pending=0, failed=0, no_space=0)
     for video in sorted(root.glob('*/*/video.mp4')):
         if stop is not None and stop.is_set():
             return counts
@@ -172,6 +177,11 @@ def backfill(output_directory, *, stop=None):
             continue
         if not embed_comfy_metadata(video, workflow=workflow, backup=run / BACKUP_NAME):
             counts['failed'] += 1
+            # Space is checked after the attempt too: a write that ran out has already removed its copy.
+            try:
+                counts['no_space'] += not _room(video, video.stat().st_size)
+            except OSError:
+                pass
             continue
         counts['embedded'] += 1
         # Keep saved results reusable: the index records each output's size and hash.
@@ -270,12 +280,12 @@ def register():
 
     def run(output):
         try:
-            result = backfill(output) or dict(embedded=0, skipped=0, pending=0, failed=0)
+            result = backfill(output) or dict(embedded=0, skipped=0, pending=0, failed=0, no_space=0)
             if result['embedded']:
                 logging.info('FreeVideo stored the workflow in %d earlier videos.', result['embedded'])
-        except Exception:
+        except Exception as error:
             logging.warning('FreeVideo could not store the workflow in earlier videos.', exc_info=True)
-            result = dict(embedded=0, skipped=0, pending=0, failed=1)
+            result = dict(embedded=0, skipped=0, pending=0, failed=1, no_space=int(disk_space.ran_out(error)))
         with _job_lock:
             _job.update(state='done', result=result)
 

@@ -148,6 +148,18 @@ const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(pre
 // saved it: Submit only opens the form). `submit` resolves to the form's
 // address; `onHide` runs when the user closes the card, not on a redraw;
 // `animate: false` redraws a card that was already showing.
+// The 'downloaded' card already showing under `bar`, if any. A second press on
+// Report moves focus to its button instead of saving another copy of the report.
+export function focusReportTip(bar) {
+    const tip = bar?.parentElement?.querySelector(':scope > .fv-report-tip-downloaded:not(.fv-report-tip-leaving)');
+    if (!tip) return false;
+    tip.querySelector('.fv-action-primary, .fv-action')?.focus({preventScroll: true});
+    return true;
+}
+export function hideReportTip(bar) {
+    bar?.parentElement?.querySelector(':scope > .fv-report-tip:not(.fv-report-tip-leaving)')?.remove();
+}
+
 export function showReportTip(bar, anchor, t, {mode = 'invite', submit, onHide = null, animate = true} = {}) {
     bar.parentElement.querySelector(':scope > .fv-report-tip:not(.fv-report-tip-leaving)')?.remove();
     const tip = el('div', 'fv-report-tip'); tip.setAttribute('role', 'region');
@@ -170,30 +182,33 @@ export function showReportTip(bar, anchor, t, {mode = 'invite', submit, onHide =
             {duration: 240, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards'}).finished.then(() => tip.remove(), () => tip.remove());
     };
     const dismiss = () => { closeForGood(); hide(); };
-    close.onclick = dismiss;
+    // Leaving by hand returns focus to the Report button, as Esc does.
+    const leave = () => { dismiss(); anchor.focus(); };
+    close.onclick = leave;
     function sent(address) {
         tip.classList.add('fv-report-tip-sent'); anchor.classList.remove('fv-report-attention');
         mark.replaceChildren(glyph('done'));
         title.textContent = t('Last step', '最后一步');
         lead.textContent = savedName?.endsWith('.zip')
             ? t(`The report is large, so it was saved as ${savedName}. Please drag it into "Diagnostic report", then select Submit new issue.`,
-                `报告较大，已保存为 ${savedName}。请将它拖入「诊断报告」，再点击 Submit new issue 即可。`)
+                `报告较大，已保存为 ${savedName}。请将它拖入「诊断报告」，再点击 Submit new issue。`)
             : savedName
             ? t(`Please drag ${savedName} into "Diagnostic report", then select Submit new issue.`,
-                `请将 ${savedName} 拖入「诊断报告」，再点击 Submit new issue 即可。`)
+                `请将 ${savedName} 拖入「诊断报告」，再点击 Submit new issue。`)
             : t('Please drag the downloaded report into "Diagnostic report", then select Submit new issue.',
-                '请将下载的诊断报告拖入「诊断报告」，再点击 Submit new issue 即可。');
+                '请将下载的诊断报告拖入「诊断报告」，再点击 Submit new issue。');
         const link = el('a', null, t("Page didn't open? Go to GitHub", '页面没有打开？点此前往 GitHub'));
         link.href = address; link.target = '_blank'; link.rel = 'noopener';
         note.replaceChildren(link);
         const done = el('button', 'fv-action fv-action-secondary', t('Done', '完成')); done.type = 'button';
-        done.onclick = dismiss;
+        done.onclick = leave;
         row.replaceChildren(done);
         close.remove();
         done.focus({preventScroll: true});
     }
     mark.append(glyph('report'));
     if (mode === 'downloaded') {
+        tip.classList.add('fv-report-tip-downloaded');
         title.textContent = t('Diagnostic report downloaded', '诊断报告已下载');
     } else {
         title.textContent = t('Share a diagnostic report?', '欢迎提交诊断报告');
@@ -218,7 +233,7 @@ export function showReportTip(bar, anchor, t, {mode = 'invite', submit, onHide =
     tip.append(card);
     tip.addEventListener('keydown', event => {
         if (event.key !== 'Escape') return;
-        event.preventDefault(); event.stopPropagation(); dismiss(); anchor.focus();
+        event.preventDefault(); event.stopPropagation(); leave();
     });
     if (mode === 'invite') anchor.classList.add('fv-report-attention');
     bar.after(tip);

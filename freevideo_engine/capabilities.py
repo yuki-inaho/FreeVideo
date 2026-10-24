@@ -215,7 +215,8 @@ def _machine(machine, in_use=None):
                 vram_free=max(0, int(vram) - idle['vram']),
                 ram_available=max(0, int(ram) - idle['ram']), idle_in_use=idle,
                 cap=tuple(cap) if not mac else None, precision=precision,
-                metal=int(metal) if metal is not None else None)
+                metal=int(metal) if metal is not None else None,
+                compile_owed=machine.get('compile_owed') is True and not mac)
 
 
 def _request(width, height, frames, steps, two_pass, task='t2va', refine=3,
@@ -290,7 +291,8 @@ def _admit(machine, width, height, frames, steps, two_pass, task='t2va', refine=
         disk_risk = any(e['stream_weights'] and e['pin_host_gb'] * 1e9 + 1e6
                         < (50 - e['resident_blocks']) * BLOCK_BYTES for e in engines)
         transfers = any(e['residual_offload'] or e['attention_cpu_outputs'] for e in engines)
-        return request, int(disk_risk or transfers), None
+        # The third value names what made a slow plan slow: host RAM (weights stream from disk) or GPU memory.
+        return request, int(disk_risk or transfers), 'memory' if disk_risk else 'gpu_memory' if transfers else None
     except ResourceBudgetError as error:
         # One field cannot encode both failures: prefer the system RAM limit.
         return None, -1, 'memory' if 'ram' in error.details['insufficient'] else 'gpu_memory'
@@ -423,7 +425,7 @@ def build(machine, records, *, aspect='16:9', size=None, task='t2va', adapters=F
     tiers = {}
     for name, tier in quality_tiers.table(machine['mac']).items():
         steps, two_pass, step_cache, upscale = tier['steps'], tier['two_pass'], tier['step_cache'], tier['upscale']
-        times, codes, maxima, frame_maxima, limits = [], [], [], [], []
+        times, codes, slow_by, maxima, frame_maxima, limits = [], [], [], [], [], []
         for size_row in sizes:
             admitted = {f: _admit(machine, size_row['width'], size_row['height'], f, steps, two_pass, task,
                                   references=references, step_cache=step_cache, upscale=upscale)
@@ -441,23 +443,27 @@ def build(machine, records, *, aspect='16:9', size=None, task='t2va', adapters=F
             maxima.append(max((l['seconds'] for l in lengths if admitted[l['frames']][0] is not None),
                               default=None))
             next_frame = maximum + 17 if maximum is not None else 39
-            limits.append('panel' if next_frame > lengths[-1]['frames'] else admitted[next_frame][2])
-            row_times, row_codes = [], []
+            limits.append('panel' if next_frame > lengths[-1]['frames']
+                          else admitted[next_frame][2] if admitted[next_frame][0] is None else None)
+            row_times, row_codes, row_slow = [], [], []
             for length in lengths:
-                request, code, _ = admitted[length['frames']]
+                request, code, why = admitted[length['frames']]
                 seconds = None
                 if request is not None:
                     seconds = max(1, math.floor(estimates[length['frames']] + .5))
                 row_times.append(seconds)
                 row_codes.append(code)
+                row_slow.append(why if code > 0 else None)
             times.append(row_times)
             codes.append(row_codes)
+            slow_by.append(row_slow)
         tiers[name] = dict(steps=steps, two_pass=two_pass, step_cache=step_cache, upscale=upscale, estimate_seconds=times,
-                           max_seconds=maxima, max_frames=frame_maxima, limit=limits, plan=codes)
+                           max_seconds=maxima, max_frames=frame_maxima, limit=limits, plan=codes, slow_by=slow_by)
     default = next((i for i, s in enumerate(sizes) if s['pixels'] == .98), 0)
     result = dict(version=1, status='ready',
                 machine=dict(gpu_name=machine['name'], vram_gib=machine['vram'] / GiB,
-                             ram_gib=machine['ram'] / GiB, system=machine['system']),
+                             ram_gib=machine['ram'] / GiB, system=machine['system'],
+                             compile_owed=machine['compile_owed']),
                 aspect=aspect, sizes=sizes, lengths=lengths, tiers=tiers,
                 summary=dict(width=sizes[default]['width'], height=sizes[default]['height'], tier='light',
                              max_seconds=tiers['light']['max_seconds'][default],

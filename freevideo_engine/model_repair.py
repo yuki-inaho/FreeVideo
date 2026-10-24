@@ -1,4 +1,4 @@
-"""Review and retain local files that differ from the model FreeVideo tests."""
+"""Review and retain local files that differ from the tested model."""
 import ctypes
 import errno
 import json
@@ -16,15 +16,15 @@ from .long_paths import io_path, plain
 
 # Shared copy for setup, the launcher and the browser plan.
 REVIEW = (
-    '{file} ({size}) differs from the version FreeVideo tests: it will be renamed to {keep_as} and kept, '
+    '{file} ({size}) differs from the tested version: it will be renamed to {keep_as} and kept, '
     'and the tested version ({expected_size}) will be downloaded.',
     '{file}（{size}）与 FreeVideo 测试过的版本不同：将改名为 {keep_as} 保留，'
     '再下载测试过的版本（{expected_size}）。',
 )
 PROGRESS = ('Keeping the original file: ', '正在保留原文件：')
-FAILURE_TITLE = ('An existing model differs from the version FreeVideo tests', '已有模型与 FreeVideo 测试过的版本不同')
+FAILURE_TITLE = ('An existing model differs from the tested version', '已有模型与 FreeVideo 测试过的版本不同')
 FAILURE = (
-    '{file} differs from the version FreeVideo tests and was left unchanged. Click {entry} again: '
+    '{file} differs from the tested version and was left unchanged. Click {entry} again: '
     'the confirmation page will list this file, and after you confirm, it will be renamed and kept, '
     'and the tested version will be downloaded.',
     '{file} 与 FreeVideo 测试过的版本不同，这次没有改动它。请再次点击“{entry}”：'
@@ -35,7 +35,7 @@ MISMATCH = 'MODEL_MISMATCH_REPAIR'
 MISMATCH_PATH = 'MODEL_MISMATCH_PATH'
 # Where the launcher offers no Repair: the first sentence of FAILURE, then one way out
 # for each reason (failure_details.WITHOUT_REPAIR).
-UNCHANGED = ('{file} differs from the version FreeVideo tests and was left unchanged.',
+UNCHANGED = ('{file} differs from the tested version and was left unchanged.',
              '{file} 与 FreeVideo 测试过的版本不同，这次没有改动它。')
 BUSY = ('When the current task ends, a Repair button appears here; after you click it and confirm, '
         'FreeVideo renames and keeps this file, then downloads the tested version.',
@@ -44,7 +44,7 @@ OFFLINE = ('This offline-package installation cannot switch back in one step yet
            'then import the Prompt model package (FreeVideo-文本编码器.zip) again on the Installation page.',
            '离线包安装暂时不能一键换回。请把下面这个文件移走或改名，再在“安装”页重新导入“提示词模型（FreeVideo-文本编码器.zip）”包。')
 FIRST_INSTALL = (
-    '{file} differs from the version FreeVideo tests and was left unchanged. Click Retry installation below: '
+    '{file} differs from the tested version and was left unchanged. Click Retry installation below: '
     'the confirmation page will list this file, and after you confirm, it is renamed and kept, '
     'and the tested version is downloaded.',
     '{file} 与 FreeVideo 测试过的版本不同，这次没有改动它。请点击下方的“重试安装”：'

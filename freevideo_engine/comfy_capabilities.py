@@ -28,8 +28,9 @@ def _hash(value):
 
 
 def _context(output_directory):
+    from .background_compile import compile_owed
     from .comfy_bridge import installation
-    _, machine = installation()
+    root, machine = installation()
     machine = dict(machine)
     device = machine.get('device_identity') if machine.get('device_backend') == 'mps' else machine.get('gpu_uuid')
     # Older machine.json stores totals only in its setup plan. Match the saved
@@ -49,6 +50,8 @@ def _context(output_directory):
     if isinstance(machine.get('hardware'), dict):
         observed.update(machine['hardware'])
     machine['hardware'] = observed
+    # Receipt read only: tells the page the first run still compiles.
+    machine['compile_owed'] = compile_owed(root)
     # Do not inherit the sampling-estimate route's 15-second history cache:
     # reopening the grid after a generation must notice the new timing record.
     rows = local_records(output_directory, device, system=machine.get('system'), stage_details=True, refresh=True)

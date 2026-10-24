@@ -56,6 +56,7 @@ export function createRequestAssets({t, api, request, onError = () => {}}) {
         const wait = timeAfter(Object.values(bytes).reduce((sum, n) => sum + n, 0), rate, t);
         if (parts.length) rows.push(t(`Downloads before generating: ${parts.join(', ')}${wait}`, `生成前会先下载：${parts.join('、')}${wait}`));
         for (const item of items) {
+            if (item.action === 'unavailable') continue;
             if (item.kind === 'prompt-vlm') {
                 const wait = timeAfter(item.bytes, rate, t);
                 rows.push(t(`First prompt rewrite downloads ${size(item.bytes)}${wait}`, `首次改写提示词会先下载 ${size(item.bytes)}${wait}`));

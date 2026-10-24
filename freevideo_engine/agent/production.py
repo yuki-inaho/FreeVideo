@@ -151,8 +151,12 @@ def plan(request, *, fields=True):
             preview.append(dict(id=shot['id'], continues=shot.get('continue', False),
                                 takes=shot.get('takes', count), prompt=text))
     _invalid(problems)
+    notice = {}
+    if play_ok and play.get('music'):
+        notice['notice'] = ('screenplay.music is not written into the shots. Music for the whole film is composed or '
+                            'provided as an audio file, imported, and laid on one sound track after the cut is joined.')
     return dict(request=dict(screenplay=play, takes_per_shot=count, director=director),
-                preview=dict(shots=preview, total=total))
+                preview=dict(shots=preview, total=total, **notice))
 
 
 def corrected_prompt(play, shot, note=None):

@@ -45,7 +45,7 @@ def nvfp4_weight(weight, dtype, device, *, rows=128, row_range=None):
     return result[:count if row_range is not None else params.orig_shape[0], :params.orig_shape[1]]
 
 
-def install_weight_reader(clip, backend, checkpoint, *, decoder=nvfp4_weight):
+def install_weight_reader(clip, backend, checkpoint, *, decoder=nvfp4_weight, pool_bytes=None):
     """Adapt only this encoder instance; never patch the shared Comfy library."""
     import torch
     from comfy.quant_ops import QuantizedTensor, get_layout_class
@@ -119,7 +119,8 @@ def install_weight_reader(clip, backend, checkpoint, *, decoder=nvfp4_weight):
     stats['projection_slices'], slice_handles = install(
         [module for module, function in selected if function is linear], model.layers,
         decoder=decoder, quantized_type=QuantizedTensor, backend=backend,
-        guard=guard, release=lambda: release_mapped_pages([checkpoint]), reader_stats=stats)
+        guard=guard, release=lambda: release_mapped_pages([checkpoint]), reader_stats=stats,
+        pool_bytes=pool_bytes)
     handles.extend(slice_handles)
     return stats, restores, handles
 
@@ -198,9 +199,11 @@ def encode(prompt, output, *, root, budget_bytes=3 * 2**30, reserve_bytes=2 * 2*
             clip = load_clip([checkpoint], clip_type=comfy.sd.CLIPType.MINIMAX,
                 model_options=dict(initial_device=torch.device('cpu'), load_device=torch.device('mps'),
                     offload_device=torch.device('cpu'), dtype=torch.bfloat16), disable_dynamic=True)
-            stats, restores, handles = install_weight_reader(clip, backend, checkpoint, decoder=decoder)
+            pool_bytes = policy['effective_allocator_limit_bytes']
+            stats, restores, handles = install_weight_reader(clip, backend, checkpoint, decoder=decoder,
+                                                             pool_bytes=pool_bytes)
             from .macos_encoder_attention import install
-            stats['attention'], attention_handles = install(clip)
+            stats['attention'], attention_handles = install(clip, pool_bytes)
             handles.extend(attention_handles)
             # Placement is handled by the instance reader; native tokenization,
             # forward and output packing still execute through the CLIP API.

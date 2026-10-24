@@ -4,6 +4,7 @@ import {createEditorReferences} from './editor_references.js';
 import {createExpandButton} from './editor_expand.js';
 import {createRequestAssets} from './request_assets.js';
 import {issueButton} from './issue_button.js';
+import {waitingText} from './chain_support.js';
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 export const timeEstimate = (seconds, t) => seconds == null ? '' : seconds < 60
     ? t(`about ${Math.max(1, Math.ceil(seconds))} s`, `约 ${Math.max(1, Math.ceil(seconds))} 秒`)
@@ -137,7 +138,7 @@ export function createEditorGenbar(host, {state, t, actions, text = ''}) {
         cancel.hidden = !busy || opening || cancelling || !held && finalization?.cancelable === false; resume.hidden = !stopped;
         const waiting = status?.state === 'queued' && !(status.blocks || []).some(block => ['queued', 'running'].includes(block.state) && block.prompt_id);
         if (opening) hint.textContent = t('Starting…', '正在开始…');
-        else if (held || waiting) hint.textContent = t('Queued', '排队中');
+        else if (held || waiting) hint.textContent = waiting && !held ? waitingText(status.waiting, t) : t('Queued', '排队中');
         else if (cancelling) hint.textContent = t('Stopping…', '正在停止…');
         else if (running) {
             const blocks = status?.blocks || [], done = blocks.filter(block => block.state === 'done').length;

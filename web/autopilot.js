@@ -10,7 +10,7 @@ import { productVersion } from './updates.js';
 import { openSetup } from './setup.js';
 import { feedbackButton } from './feedback.js';
 import { openExtendEditor, openStudio, showNodes } from './studio.js';
-import { viewChanged, viewSwitch } from './view_navigation.js';
+import { agentTabReady, viewChanged, viewSwitch } from './view_navigation.js';
 import { wordmark } from './wordmark.js';
 
 const languageOverride = typeof location !== 'undefined'
@@ -46,7 +46,11 @@ export function openAutopilotView(node, {studio = null, initialPrompt = '', init
     header.append(brand, navigation, tools, line);
     const inSight = () => dialog.open && dialog.dataset.closing !== 'true';
     const body = el('div', 'fv-autopilot-body');
-    const card = agentConnectCard(t, api, () => inSight() && !card.element.hidden);
+    const card = agentConnectCard(t, api, () => inSight() && !card.element.hidden, value => {
+        on = value; show();
+        if (value !== 'unknown') agentTabReady(value);
+        if (value === 'on') chat.sync();
+    });
     // Leaving for another view waits until this page has closed, so the view underneath is never covered twice.
     const closed = () => dialog.open ? new Promise(done => { dialog.addEventListener('close', done, {once: true}); closeDialog(dialog); }) : null;
     // The next video at the studio's current settings; the agent may choose others, so this is only what is missing now.
@@ -70,10 +74,11 @@ export function openAutopilotView(node, {studio = null, initialPrompt = '', init
     function show() {
         const connected = last.agent.connected === true, label = connectionLabel(last.agent, t);
         if (connected) wantCard = false;
-        const ready = on === true && last.known, talking = ready && (connected || (last.any && !wantCard));
+        const ready = on === 'on' && last.known, talking = ready && (connected || (last.any && !wantCard));
         // The card gives way to the conversation: typing can start at once.
         const arrived = talking && chat.element.hidden && (card.element.contains(document.activeElement) || document.activeElement === lamp);
-        card.element.hidden = !ready || talking; chat.element.hidden = !talking;
+        // A check that failed keeps the card up: its retry is the way back.
+        card.element.hidden = !(ready || on === 'unknown') || talking; chat.element.hidden = !talking;
         body.dataset.view = talking ? 'chat' : 'connect';
         if (talking) chat.sync();
         if (arrived) chat.input.focus();
@@ -98,7 +103,7 @@ export function openAutopilotView(node, {studio = null, initialPrompt = '', init
     go.onclick = () => chat.scrollToJob(currentId);
     halt.onclick = () => chat.stopAll();
     body.append(card.element, chat.element);
-    card.enabled.then(value => { on = value; show(); if (value) chat.sync(); });
+    card.state.then(value => { on = value; show(); if (value === 'on') chat.sync(); });
     show();
     dialog.append(header, body);
     dialog.addEventListener('cancel', event => { event.preventDefault(); closeDialog(dialog); });

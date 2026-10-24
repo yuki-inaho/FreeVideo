@@ -20,6 +20,7 @@ from .long_paths import extended, io_path, path_chars, plain, resolved
 from .package_paths import ALIAS_ROOT_RESERVE, KNOWN_RUNTIME_PATH_CHARS, WINDOWS_PATH_LIMIT
 
 RESERVE = 40
+ONLINE_LOADED_PATH_CHARS = 100  # below the engine folder: envs\\unified\\Lib\\site-packages\\nvidia\\cudnn\\bin\\<dll>
 PROGRAMS = ('.exe',)
 LOADED = PROGRAMS + ('.dll', '.pyd')  # What Windows starts or loads, never from beyond the limit.
 # The licence texts a package carries are a runtime's deepest files, and no program opens them.
@@ -542,6 +543,17 @@ def needs_view(root, longest=None, spelling_only=False) -> bool:
     # With it off, every file the installation opens counts, and RESERVE for those it makes.
     longest = _longest(root) if longest is None else longest
     return path_chars(root) + 1 + longest + RESERVE > WINDOWS_PATH_LIMIT
+
+
+def online_loaded_too_long(engine) -> bool:
+    """An online installation whose deepest program or library is beyond what Windows loads.
+
+    The loader ignores the system's long-path setting for a DLL such as torch\\lib\\c10.dll.
+    """
+    if not _backend.windows() or os.environ.get('FREEVIDEO_RUNTIME_ALIAS') == '0':
+        return False
+    engine = _ordinary(resolved(checked_real_path(engine)))
+    return path_chars(engine) + 1 + ONLINE_LOADED_PATH_CHARS > WINDOWS_PATH_LIMIT
 
 
 def is_junction(path) -> bool:

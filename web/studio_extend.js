@@ -6,6 +6,7 @@ export const EXTEND_TEXT = Object.freeze({
     remove: ['Remove', '移除'],
     prompt: ['Prompt', '描述'],
     unavailable: ['Video unavailable', '视频不可用'],
+    unchecked: ['Could not check the video', '没能检查视频'],
 });
 export const extendText = (t, key) => t(...EXTEND_TEXT[key]);
 
@@ -24,20 +25,31 @@ export function extendVideoURL(record) {
         subfolder: split < 0 ? '' : record.video.slice(0, split), type: 'output'});
 }
 
-export async function extendSourceExists(api, record) {
-    if (!canExtend(record)) return false;
-    const url = extendVideoURL(record);
+// 'ok'; 'missing' only when the server answered 404 or 410; 'unknown' when offline, timed out or any other answer.
+export async function extendSourceState(api, record) {
+    if (!canExtend(record)) return 'missing';
+    const url = extendVideoURL(record), gone = status => status === 404 || status === 410;
+    let missing = false;
     try {
-        if ((await api.fetchApi(url, {method: 'HEAD', signal: AbortSignal.timeout(10000)})).ok) return true;
+        const head = await api.fetchApi(url, {method: 'HEAD', signal: AbortSignal.timeout(10000)});
+        if (head.ok) return 'ok';
+        missing = gone(head.status);
     } catch { /* HEAD can fail even when the browser can still read the video. */ }
     try {
         const response = await api.fetchApi(url, {method: 'GET', headers: {Range: 'bytes=0-0'},
             signal: AbortSignal.timeout(10000)});
         // A server may ignore Range. Release its stream without downloading the video.
         await response.body?.cancel().catch(() => {});
-        return response.ok;
-    } catch { return false; }
+        return response.ok ? 'ok' : gone(response.status) ? 'missing' : 'unknown';
+    } catch { return missing ? 'missing' : 'unknown'; }
 }
+
+export async function extendSourceExists(api, record) {
+    return await extendSourceState(api, record) === 'ok';
+}
+
+// What a continuation says when its source video is not 'ok'.
+export const extendSourceProblem = (t, state) => extendText(t, state === 'missing' ? 'unavailable' : 'unchecked');
 
 export const videoUnavailableText = t => t('This video cannot be opened. If you moved the file, refresh the page.',
     '视频打不开，如果移动过文件，请刷新页面。');

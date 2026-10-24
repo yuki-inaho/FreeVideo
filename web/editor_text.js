@@ -3,7 +3,7 @@
 import * as model from './editor_model.js';
 import {FONT_KEYS} from './fonts.js';
 import {row, button, slider, number, segmented, toggle} from './editor_adjust.js';
-import {isText, isTextTrack, addText, changeText, changeSubtitleStyle, styleOf, activeText, setTextTrack, parseSRT, importSRT, addSubtitles, defaults, cleanStyle, SUBTITLE_DEFAULTS} from './editor_text_model.js';
+import {isText, isTextTrack, addText, changeText, changeSubtitleStyle, styleOf, activeText, setTextTrack, parseSRT, decodeSRT, importSRT, addSubtitles, defaults, cleanStyle, SUBTITLE_DEFAULTS} from './editor_text_model.js';
 import {loadCoverage, loadTextFonts, textFontStack, missingGlyphs, missingHint, overTwoHint, textLayout, drawText} from './editor_text_layout.js';
 import {createSelectionActions, isTyping} from './editor_select.js';
 import {plan} from './editor_geometry.js';
@@ -69,10 +69,14 @@ export function createEditorText({element,state,t,actions,adjust,player,toolbar,
     function speechLabel(fraction){speech.shown=fraction;const p=Math.round(Math.min(1,Math.max(0,Number(fraction)||0))*100),size=Math.max(1,Math.round(speech.need/1e6)),text=fraction==null?(speech.need?t(`Auto subtitles · Download ${size} MB`,`自动字幕 · 下载 ${size} MB`):t('Auto subtitles','自动字幕')):speech.loading?t(`Cancel · Downloading ${p}%`,`取消 · 下载 ${p}%`):t(`Cancel · ${p}%`,`取消 · ${p}%`);for(const b of speech.buttons){b.textContent=text;b.hidden=!(speech.available||speech.need);}}
     function speechEnd(text,where=null){speech.stop?.();speech.stop=null;speech.job=null;speech.busy=false;speech.loading=false;speechLabel(null);if(text)actions.notify?.(text,where);}
     const speechFailed=()=>t('Could not create subtitles','没能生成字幕'),speechSilent=()=>t('No speech found','没有听到说话声');
-    const speechReason=reason=>reason==='no_sound'?speechSilent():reason==='language'?t('Language not supported yet','暂不支持这种语言'):speechFailed();
+    const speechDisk=()=>t('The disk is full. Free some space, then try again.','磁盘空间不足，请清理出空间后重试。');
+    // Causes the person can act on are named and carry no issue button; anything else is unexplained.
+    const speechReasons={no_sound:speechSilent,language:()=>t('Language not supported yet','暂不支持这种语言'),too_long:()=>t('Auto subtitles work on up to 2 hours of sound.','自动字幕最多处理 2 小时的声音。'),
+        source_missing:()=>t('A source file is missing. Import it again from the library.','有素材的原文件找不到了，请在素材库重新导入。'),unreadable:()=>t('The sound in a clip cannot be read.','有素材的声音无法读取。'),disk_full:speechDisk};
+    const speechReason=reason=>(Object.hasOwn(speechReasons,reason)?speechReasons[reason]:speechFailed)();
     function speechResult(job){
         if(job.state==='running'){speechLabel(job.fraction);return true;}
-        if(job.state!=='done'){speechEnd(job.state==='cancelled'?null:speechReason(job.reason),job.state==='cancelled'||['no_sound','language'].includes(job.reason)?null:SPEECH_ISSUE);return false;}
+        if(job.state!=='done'){speechEnd(job.state==='cancelled'?null:speechReason(job.reason),job.state==='cancelled'||Object.hasOwn(speechReasons,job.reason)?null:SPEECH_ISSUE);return false;}
         const cues=(Array.isArray(job.result?.lines)?job.result.lines:[]).filter(l=>typeof l?.text==='string'&&l.text.trim()&&l.end>l.start).map(l=>({start:l.start,frames:l.end-l.start,text:l.text.trim()}));
         speechEnd();if(!cues.length){actions.notify?.(speechSilent());return false;}
         finishInline();commitDraft();
@@ -88,10 +92,11 @@ export function createEditorText({element,state,t,actions,adjust,player,toolbar,
                 speech.loading=true;speechLabel(0);
                 const done=await actions.speech.download(fraction=>{if(run===speech.run)speechLabel(fraction);});
                 if(run!==speech.run)return;
-                const ability=done?await actions.speech.ability():null;
+                // `done` is true, or the reason the download stopped.
+                const ability=done===true?await actions.speech.ability():null;
                 if(run!==speech.run)return;
                 if(ability){speech.available=ability.available;speech.need=ability.need;}
-                if(!done||speech.need){speechEnd(t('Could not download. Try again.','没能下载，请再试一次。'),SPEECH_ISSUE);return;}
+                if(done!==true||speech.need){speechEnd(done==='disk_space'?speechDisk():t('Could not download. Try again.','没能下载，请再试一次。'),done==='disk_space'?null:SPEECH_ISSUE);return;}
                 if(!speech.available){speechEnd(speechFailed(),SPEECH_ISSUE);return;}
                 speech.loading=false;
             }
@@ -164,9 +169,16 @@ export function createEditorText({element,state,t,actions,adjust,player,toolbar,
         }else{
             const file=el('input');file.type='file';file.accept='.srt';file.hidden=true;
             const importButton=button(t('Import subtitle file','导入字幕文件'),{onClick:()=>file.click()});importButton.classList.add('fv-ed-import-srt');
-            // Only a file that cannot be read says so; a refused edit (a locked track) flashes red like any other.
-            file.onchange=async()=>{const f=file.files?.[0];if(!f)return;let text;const result={};try{if(f.size>4*1024*1024)throw new Error();text=await f.text();parseSRT(text,result);}catch{actions.notify?.(t('Could not read this subtitle file','读不出这个字幕文件'));return;}finally{file.value='';}
-                if(apply(t('Import subtitle file','导入字幕文件'),r=>importSRT(r,text))){const missing=projectMissing(state.record);if(missing.length)actions.notify?.(missingHint([...new Set(missing.flatMap(r=>r.chars))],t));if(result.truncated)actions.notify?.(t('Only the first 500 subtitles were imported.','只导入了前 500 条字幕。'));}};
+            // A file that cannot be used says why; a refused edit (a locked track) flashes red like any other.
+            file.onchange=async()=>{const f=file.files?.[0];if(!f)return;let text;const result={};
+                try{
+                    if(f.size>4*1024*1024){actions.notify?.(t('Subtitle files can be up to 4 MB.','字幕文件不能超过 4 MB。'));return;}
+                    try{text=decodeSRT(await f.arrayBuffer(),t('windows-1252','gb18030'));}catch{actions.notify?.(t('Could not read this subtitle file','读不出这个字幕文件'));return;}
+                    try{parseSRT(text,result);}catch{actions.notify?.(t('No subtitles found. Only SRT files can be imported.','未找到字幕。仅支持导入 SRT 字幕文件。'));return;}
+                }finally{file.value='';}
+                if(apply(t('Import subtitle file','导入字幕文件'),r=>importSRT(r,text))){const missing=projectMissing(state.record);if(missing.length)actions.notify?.(missingHint([...new Set(missing.flatMap(r=>r.chars))],t));
+                    if(result.truncated)actions.notify?.(t('Only the first 500 subtitles were imported.','只导入了前 500 条字幕。'));
+                    else if(result.skipped)actions.notify?.(t(`${result.skipped} subtitles could not be read and were skipped.`,`${result.skipped} 条字幕无法读取，已跳过。`));}};
             // Shown only where this computer can recognise speech.
             const hear=button(t('Auto subtitles','自动字幕'),{onClick:toggleSpeech});hear.classList.add('fv-ed-auto-subtitles');for(const b of speech.buttons)if(!b.isConnected)speech.buttons.delete(b);speech.buttons.add(hear);speechLabel(speech.busy?speech.shown:null);
             host.append(importButton,hear,file);

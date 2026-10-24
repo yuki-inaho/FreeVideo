@@ -9,7 +9,7 @@ import sys
 from .agent import enabled as agent_enabled
 from .bootstrap import DEFAULT_ROOT
 from . import __version__
-from .locking import runtime_lock, LOCK_ENV
+from .locking import runtime_lock, LOCK_ENV, ENGINE_BUSY
 from . import processes
 from .system import windows
 
@@ -117,7 +117,7 @@ def _main(argv=None):
                 or (command == 'doctor' and '--probe' not in tail) or '--help' in tail or '-h' in tail)
     snapshot = json.loads(config.read_text(encoding='utf-8'))
     lock_path = os.environ.get('FREEVIDEO_LOCK_PATH', str(Path(snapshot['root']) / 'engine.lock'))
-    with nullcontext() if readonly else runtime_lock(lock_path) as descriptor:
+    with nullcontext() if readonly else runtime_lock(lock_path, wait_seconds=3 if command == 'generate' else 0) as descriptor:
         machine = json.loads(config.read_text(encoding='utf-8'))
         if machine != snapshot:
             raise ValueError('Installation changed while starting. Rerun the command.')
@@ -140,7 +140,7 @@ def main(argv=None):
     try:
         return _main(argv)
     except BlockingIOError:
-        print('Setup, testing or generation is already using this installation/GPU lock. Retry after it finishes.', file=sys.stderr)
+        print(ENGINE_BUSY, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print('Cancelled. Workers stopped; existing outputs and reports retained.', file=sys.stderr)

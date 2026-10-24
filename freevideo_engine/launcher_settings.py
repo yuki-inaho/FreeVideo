@@ -3,6 +3,7 @@ from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import time
 
@@ -91,6 +92,34 @@ def read(path):
         return {}
 
 
+KEPT_COPIES = 3
+
+
+def keep_unreadable(path):
+    """Copy a settings file that exists but cannot be parsed aside before a save replaces it."""
+    try:
+        text = io_path(path).read_text(encoding='utf-8')
+        if not text.strip() or isinstance(json.loads(text), dict):
+            return None
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        pass
+    kept = Path(str(path) + '.bad-' + time.strftime('%Y%m%d-%H%M%S'))
+    try:
+        shutil.copyfile(io_path(path), io_path(kept))
+    except OSError:
+        return None
+    # A save that keeps failing leaves the file unreadable, so every retry copies it again.
+    older = sorted(kept.parent.glob(Path(path).name + '.bad-*'))[:-KEPT_COPIES]
+    for stale in older:
+        try:
+            io_path(stale).unlink()
+        except OSError:
+            pass
+    return kept
+
+
 def write(path, values, language, selection=None):
     payload = dict(values, language=language, installation=selection)
     save(path, sanitize(payload))
@@ -174,6 +203,8 @@ class Store:
                 previous = read(path)
                 if previous:
                     save(path.with_suffix('.previous.json'), previous)
+                else:
+                    keep_unreadable(path)
                 save(path, payload)
                 written.append(path)
             except OSError as error:

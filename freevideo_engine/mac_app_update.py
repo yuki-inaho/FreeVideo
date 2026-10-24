@@ -50,12 +50,23 @@ tick="${FREEVIDEO_SWAP_TICK:-1}"; stable_need="${FREEVIDEO_SWAP_STABLE:-15}"; ap
 pattern=$(printf '%s\n' "$app/Contents/MacOS/" | /usr/bin/sed 's/[][\.*^$+?(){}|]/\\&/g')
 alive() { "${FREEVIDEO_PGREP:-/usr/bin/pgrep}" -f -- "$pattern" >/dev/null 2>&1; }
 stable=0; seen=0; tries=0
-while [ "$stable" -lt "$stable_need" ]; do
-    if alive; then seen=1; stable=$((stable + 1)); elif [ "$seen" = 1 ]; then break; fi
-    tries=$((tries + 1))
-    if [ "$tries" -gt $((appear_max + stable_need)) ]; then break; fi
-    sleep "$tick"
-done
+watch() {
+    while [ "$stable" -lt "$stable_need" ]; do
+        if alive; then
+            seen=1; stable=$((stable + 1))
+        elif [ "$seen" = 1 ]; then
+            return
+        else
+            # Only the wait for the app to appear is limited; once it is up it is never given up on early.
+            tries=$((tries + 1))
+            if [ "$tries" -gt "$appear_max" ]; then return; fi
+        fi
+        sleep "$tick"
+    done
+}
+watch
+# An app that shows up just as the wait ends is running: never delete it to bring the old one back.
+if [ "$stable" -lt "$stable_need" ] && alive; then stable=0; seen=1; watch; fi
 if [ "$stable" -lt "$stable_need" ]; then
     note "the new app did not stay open"; /bin/mv "$app" "$staged" && restore; exit 1
 fi

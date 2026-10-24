@@ -2,6 +2,7 @@
 // shows one. A click opens the GitHub feedback form with the error sentence already in it; the report
 // and typed text never travel (the message goes through the same redaction as the failure card's report).
 import {createErrorReport} from './error_panel.js';
+import {focusReportTip, reportIssue, showReportTip} from './report_issue.js';
 
 const MESSAGE = 300, TAIL = 1500;
 const ISSUE_FORM = 'https://github.com/FlashML-org/FreeVideo/issues/new';
@@ -47,8 +48,12 @@ function style() {
     document.head.append(sheet);
 }
 
-/** The button. `source` is {where, message, kind} or a function returning it when clicked (null: nothing to send). */
-export function issueButton(t, source, {className = '', open = (url, features) => globalThis.open?.(url, '_blank', features)} = {}) {
+/**
+ * The button. `source` is {where, message, kind} or a function returning it when clicked (null: nothing to send).
+ * `route` ({has, download, fetch, version}) is a run's diagnostic report: while it exists the click saves it and
+ * the report tip opens the form, instead of the feedback form.
+ */
+export function issueButton(t, source, {className = '', route = null, open = (url, features) => globalThis.open?.(url, '_blank', features)} = {}) {
     style();
     const button = document.createElement('button'); button.type = 'button';
     button.className = `fv-issue-button ${className}`.trim();
@@ -59,6 +64,12 @@ export function issueButton(t, source, {className = '', open = (url, features) =
     button.onclick = async () => {
         const value = typeof source === 'function' ? source() : source;
         if (!value) return;
+        if (route?.has()) {
+            if (focusReportTip(button.parentElement)) return;
+            try { await route.download(); } catch { return; }
+            showReportTip(button.parentElement, button, t, {mode: 'downloaded', submit: () => reportIssue(route.fetch, route.version(), {save: false})});
+            return;
+        }
         const ready = await load();
         const draft = issueDraft(value, t);
         // Modules that did not load still leave the blank form reachable.

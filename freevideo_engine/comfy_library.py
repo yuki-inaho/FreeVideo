@@ -31,6 +31,10 @@ def _video(root, identity):
     return path
 
 
+class _Unfinished(ValueError):
+    """A run whose summary says it did not finish: not a damaged record."""
+
+
 def _report(path):
     # Read only the small request summary, never tensors, prompts or media.
     with path.with_suffix('.request.json').open('rb') as stream:
@@ -38,8 +42,10 @@ def _report(path):
     if len(data) > 4 * 1024 * 1024:
         raise ValueError('Request summary is too large')
     report = json.loads(data)
-    if not isinstance(report, dict) or report.get('success') is not True:
-        raise ValueError('Video is not complete')
+    if not isinstance(report, dict):
+        raise ValueError('Request summary is not an object')
+    if report.get('success') is not True:
+        raise _Unfinished('Video is not complete')
     return report
 
 
@@ -82,12 +88,20 @@ def list_videos(output_directory, *, before=None, limit=24):
                 candidates.append((key, path, info))
         except (OSError, ValueError):
             continue
-    rows = []
+    rows, unreadable = [], []
     for key, path, info in sorted(candidates, key=lambda item: item[0], reverse=True):
+        relative = Path('FreeVideo') / key[1] / 'video.mp4'
+        if relative.as_posix() in hidden:
+            continue
         try:
-            report = _report(path)
-            relative = Path('FreeVideo') / key[1] / 'video.mp4'
-            if relative.as_posix() in hidden:
+            try:
+                report = _report(path)
+            except (FileNotFoundError, _Unfinished):
+                # A generation still writing its video has no summary yet; a failed run is not listed.
+                continue
+            except (OSError, ValueError):
+                # Summaries are replaced atomically, so one that cannot be read is damaged.
+                unreadable.append(key)
                 continue
             summary = output_summary(report, relative)
             # Geometry may gain input metadata in future reports. Keep this API
@@ -123,7 +137,9 @@ def list_videos(output_directory, *, before=None, limit=24):
     next_cursor = rows[-1]['cursor'] if more else None
     for row in rows:
         row.pop('cursor')
-    return dict(items=rows, next=next_cursor)
+    # Each page counts the damaged summaries in its own range, so the pages add up.
+    last = (int(next_cursor.split(':', 1)[0]), next_cursor.split(':', 1)[1]) if next_cursor else None
+    return dict(items=rows, next=next_cursor, unreadable=sum(last is None or key > last for key in unreadable))
 
 
 def thumbnail(output_directory, identity):

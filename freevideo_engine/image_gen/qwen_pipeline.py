@@ -306,8 +306,8 @@ class QwenImageGenerator:
         ref_latents = []
         if vae_images:
             with self._stage("encode"):
-                for image in vae_images:
-                    check_cancel()
+                for index, image in enumerate(vae_images):
+                    report("encode", index / len(vae_images))
                     # Always tiled, whatever the memory plan: the latents (and so the picture)
                     # must not depend on the card, and the tiled pass needs far less memory.
                     encoded = _encoded_latents(
@@ -315,7 +315,7 @@ class QwenImageGenerator:
                     mean, std = self._stats(encoded)
                     encoded = (encoded - mean) / std
                     ref_latents.append(self._pack_latents(encoded, 1, channels, *encoded.shape[-2:]).to(embeds.dtype))
-                    check_cancel()
+                report("encode", 1.0)
         keep_latents = cell_mask = None
         if edit_mask is not None:
             from . import region_edit

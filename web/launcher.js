@@ -3,6 +3,7 @@ import { api } from '../../scripts/api.js';
 import { restorePromptDraft } from './prompt_draft.js';
 import { takePortMarker } from './port_notice.js';
 import { launcherRestoreFinished } from './workspace_restore.js';
+import { clonePrompt } from './optional_inputs.js';
 
 // health.js names what failed; files loaded before it queue their reports.
 const health = item => (window.__freevideoHealth ||= []).push(item);
@@ -93,7 +94,7 @@ async function existingStudioWorkflow(target, bundled) {
     // Only the shared tab is ours to replace; a workflow the user saved under another name stays.
     const current = target.path === 'workflows/FreeVideo.json' ? currentStudioWorkflow(saved, bundled) : null;
     if (current) return restorePromptDraft(api, current, target.path);
-    const graph = structuredClone(saved);
+    const graph = clonePrompt(saved);
     if (!graph.nodes?.some(node => node.type === 'FreeVideoGenerate')) {
         const node = structuredClone(bundled.nodes.find(node => node.type === 'FreeVideoGenerate'));
         node.id = Math.max(graph.last_node_id || 0, ...graph.nodes.map(node => Number(node.id) || 0)) + 1;
@@ -154,7 +155,7 @@ async function keepInFront(workflow, opened) {
         if (studioWorkflow(app.graph)) {
             const current = app.graph.serialize(), target = store?.activeWorkflow;
             const replaced = target?.path === 'workflows/FreeVideo.json' ? currentStudioWorkflow(current, workflow) : null;
-            const restored = await restorePromptDraft(api, replaced || structuredClone(current), target?.path || '__existing__');
+            const restored = await restorePromptDraft(api, replaced || clonePrompt(current), target?.path || '__existing__');
             if (JSON.stringify(restored) !== JSON.stringify(current))
                 await app.loadGraphData(restored, true, true, target || 'FreeVideo');
             return;

@@ -30,6 +30,13 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] in ('projects', 'sessions'):
         from .agent.cli import main as agent
         return agent(sys.argv[1:])
+    if not getattr(sys, 'frozen', False) and not {'-h', '--help'} & set(sys.argv[1:]):
+        from .launch_view import restart_arguments
+        restart = restart_arguments(sys.argv[1:])
+        if restart is not None:
+            # Deep installation folder: Windows cannot load the libraries by their full path.
+            from . import processes
+            raise SystemExit(processes.run(restart[0], env=restart[1], start_new_session=False).returncode)
     if len(sys.argv) > 1 and sys.argv[1] == 'predict':
         from .prediction_cli import main as predict
         raise SystemExit(predict(sys.argv[2:]))

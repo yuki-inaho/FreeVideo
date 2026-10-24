@@ -8,7 +8,7 @@ export async function sendError(response) {
     try { return (await (response.clone?.() || response).json())?.error || null; }
     catch { return null; }
 }
-export const emptyChat = () => ({session: undefined, items: new Map(), jobs: {}, failures: {}, confirms: {}, last: 0, read: 0, agent: {}, current: null, active: 0});
+export const emptyChat = () => ({session: undefined, items: new Map(), jobs: {}, failures: {}, confirms: {}, last: 0, read: 0, agent: {}, current: null, active: 0, abandoned: false, stage: null});
 // One answer from the server folded into what the page already has: entries add up by their number, jobs are
 // replaced by id (a card keeps its last state after the server stops listing its job), and so are the answers to its questions.
 export function chatMerge(state, data) {
@@ -17,7 +17,8 @@ export function chatMerge(state, data) {
     const read = Math.max(state.read, Number(data.read_seq) || 0, ...(data.items || []).filter(item => item.read === true).map(item => item.seq));
     return {session: data.session ?? null, items, jobs: {...state.jobs, ...(data.jobs || {})}, failures: data.failures || {}, confirms: {...state.confirms, ...(data.confirms || {})}, read,
         last: Math.max(state.last, Number(data.last_seq) || 0, ...items.keys()), agent: data.agent || {},
-        current: data.current || null, active: Number(data.active) || 0};
+        current: data.current || null, active: Number(data.active) || 0,
+        abandoned: data.abandoned === true, stage: typeof data.stage === 'string' ? data.stage : null};
 }
 // The entries in order. A user's sentence counts as taken once the agent has read it or has said or done anything after it.
 export function chatEntries(state) {
@@ -91,6 +92,7 @@ export function chatData(api) {
         create: () => agentPost(api, '/freevideo/agent/chat/new', {}),
         remove: (session, stop = false) => agentPost(api, '/freevideo/agent/chat/delete', stop ? {session, stop: true} : {session}),
         confirm: body => agentPost(api, '/freevideo/agent/chat/confirm', body),
+        abandon: session => agentPost(api, '/freevideo/agent/chat/abandon', session ? {session} : {}),
         cancel: id => retryAgentPost(api, '/freevideo/agent/activity/cancel', {id}),
         activity: (cursor, options) => read('/freevideo/agent/activity' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), options),
         sendMessage: (entry, options) => sendChatMessage(api, entry, options),
@@ -99,7 +101,9 @@ export function chatData(api) {
     };
 }
 export function chatDelay({hidden = false, phone = false, idle = false, interval = 1500, failures = 0} = {}) {
-    return phone ? (hidden ? 10000 : 2000) : (idle ? Math.max(interval, 3000) : interval) * Math.min(4, 1 + failures);
+    // A page nobody is looking at asks less often; it only has to notice what the tab title announces.
+    if (phone) return hidden ? 10000 : 2000;
+    return Math.max(hidden ? 10000 : 0, idle ? Math.max(interval, 3000) : interval) * Math.min(4, 1 + failures);
 }
 // Serial polling, visibility rescheduling and disposal work without a browser.
 export function chatPoller(read, {delay = () => 2000, error = () => {}, clock = globalThis} = {}) {

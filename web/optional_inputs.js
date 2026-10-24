@@ -52,3 +52,14 @@ export function cleanOptionalPrompt(prompt) {
     }
     return prompt;
 }
+
+// A graph taken from the host can carry a value structuredClone refuses, such as a reactive proxy another
+// extension left in the workflow's extra data. The request is JSON on the wire, so when the native copy
+// fails the JSON copy stands in for it; a graph that clones natively is copied exactly as before.
+export function clonePrompt(value) {
+    try { return structuredClone(value); }
+    catch (error) {
+        if (error?.name !== 'DataCloneError') throw error;
+        return JSON.parse(JSON.stringify(value));
+    }
+}

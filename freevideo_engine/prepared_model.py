@@ -9,12 +9,16 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import time
 
 from . import execution_paths
 from .long_paths import io_path, resolved, plain, plain_errors
 from . import network
 
 CATALOG = Path(__file__).with_name('prepared_models.json')
+# (connect, total) seconds per pass; slow-network retries stop once the budget is spent.
+PREFLIGHT_PASSES = ((5, 12), (10, 30))
+PREFLIGHT_SECONDS = 150
 
 
 @plain_errors
@@ -129,17 +133,31 @@ def access_error(selection, networking, *, environ=None):
                 'Use --model-source source only if you want the larger original-model conversion.')
     manifest = next(r for r in files(selection) if r['file'].endswith('/manifest.json'))
     family = network.model_family(manifest)
+    attempts = []
     for source, url in network.model_urls(networking, manifest, env):
         headers = ['Authorization: Bearer ' + secret] if secret and source == 'official' else []
-        for route in network.route_order(networking, family, source, env):
+        attempts += [(source, route, url, headers) for route in network.route_order(networking, family, source, env)]
+    failures = {}
+    started = time.monotonic()
+    # A slow network gets one longer second chance, as the real download does.
+    for connect, total in PREFLIGHT_PASSES:
+        retry = []
+        for source, route, url, headers in attempts:
+            if time.monotonic() - started > PREFLIGHT_SECONDS:
+                break
             try:
                 result = execution_paths.run([
                     'curl', '--disable', '--silent', '--show-error', '--location', '--head',
-                    '--output', os.devnull, '--write-out', '%{http_code}', '--connect-timeout', '5',
-                    '--max-time', '12', '--config', '-'],
-                    input=network.curl_config(url, headers), capture_output=True, timeout=15,
+                    '--output', os.devnull, '--write-out', '%{http_code}', '--connect-timeout', str(connect),
+                    '--max-time', str(total), '--config', '-'],
+                    input=network.curl_config(url, headers), capture_output=True, timeout=total + 3,
                     env=network.route_environment(networking, family, source, env, route))
-            except (OSError, subprocess.TimeoutExpired):
+            except subprocess.TimeoutExpired:
+                failures[(source, route)] = 'timeout'
+                retry.append((source, route, url, headers))
+                continue
+            except OSError:
+                failures[(source, route)] = 'download tool unavailable'
                 continue
             status = result.stdout.decode('ascii', errors='ignore').strip()
             if result.returncode == 0 and status == '200':
@@ -148,8 +166,24 @@ def access_error(selection, networking, *, environ=None):
             if selection.get('private') and status in ('401', '403', '404'):
                 return ('Cannot access the pinned prepared model in ' + selection['repo'] +
                         '. Check your Hugging Face token and repository access; no large downloads started.')
-    return ('Could not reach the pinned prepared model sources. Check the proxy/network and retry; '
+            failures[(source, route)] = preflight_reason(result.returncode, status)
+            if result.returncode == 28:
+                retry.append((source, route, url, headers))
+        attempts = retry
+        if not attempts:
+            break
+    seen = ['%s (%s): %s' % (source, route, reason) for (source, route), reason in failures.items()]
+    return ('Could not reach the pinned prepared model sources' + (' [' + '; '.join(seen) + ']' if seen else '') +
+            '. Check the proxy/network and retry; '
             'existing files are retained. No automatic switch to the much larger source model.')
+
+
+def preflight_reason(returncode, status):
+    if returncode == 0 and re.fullmatch(r'[1-5]\d\d', status):
+        return 'HTTP ' + status
+    return {6: 'DNS lookup failed', 7: 'connection refused', 28: 'timeout', 35: 'TLS handshake failed',
+            47: 'too many redirects', 56: 'connection reset', 60: 'certificate not trusted'}.get(
+                returncode, 'download tool exit %d' % returncode)
 
 
 def verify_manifest(selection):

@@ -78,6 +78,50 @@ def current_settings(value):
     return value
 
 
+def failure_evidence(details):
+    # Bookkeeping must never turn a settled failure into another error.
+    try:
+        return _failure_evidence(details)
+    except Exception:
+        return None
+
+
+def _failure_evidence(details):
+    """What a discarded GPU failure leaves for diagnosis: fixed fields and numbers only.
+
+    The attempt row is deleted when it is discarded, so a report taken after a
+    later successful retry would otherwise show no more than the reason.
+    """
+    if not isinstance(details, dict):
+        return None
+    evidence = {}
+    for key in ('failed_phase', 'completed_steps'):
+        value = details.get(key)
+        if isinstance(value, str) and len(value) <= 64 or type(value) is int:
+            evidence[key] = value
+    chain = []
+    for item in (details.get('exception') or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        entry = {key: item[key] for key in ('exception_type', 'category') if isinstance(item.get(key), str)
+                 and len(item[key]) <= 64}
+        if type(item.get('error_code')) is int:
+            entry['error_code'] = item['error_code']
+        entry['frames'] = [{key: (str(frame[key]).replace('\\', '/').rsplit('/', 1)[-1] if key == 'file' else frame[key])
+                            for key in ('file', 'function', 'line')
+                            if isinstance(frame.get(key), (str, int)) and len(str(frame[key])) <= 96}
+                           for frame in (item.get('frames') or [])[-4:] if isinstance(frame, dict)]
+        chain.append(entry)
+    if chain:
+        evidence['exception'] = chain
+    memory = details.get('memory')
+    if isinstance(memory, dict):
+        numbers = {key: value for key, value in memory.items() if type(value) is int}
+        if numbers:
+            evidence['memory'] = dict(list(numbers.items())[:16])
+    return evidence or None
+
+
 def device_key(identity):
     """Missing optional metadata disables compatibility, never invents a device."""
     if not isinstance(identity, dict):
@@ -174,7 +218,7 @@ class Store:
             self.write_row(db, key, value)
         return dict(value, levels=LEVELS, available=True)
 
-    def incident(self, row, reason, batch=None):
+    def incident(self, row, reason, batch=None, evidence=None):
         # Only a launched video worker can be a load-related interrupted attempt.
         if row.get('purpose') != 'generation' or not row.get('worker'):
             return
@@ -191,6 +235,9 @@ class Store:
                 config=row['config'], geometry=row['geometry'], diagnosis='unknown', time=time.time(),
                 policy_revision=revision, applicable=revision == policy_revision(),
                 counted=False, level_changed=False)
+            evidence = failure_evidence(evidence)
+            if evidence:
+                incident['evidence'] = evidence
             escalate = False
             if value['automatic'] and incident['applicable']:
                 if reason == 'cuda_error':
@@ -225,6 +272,8 @@ class Store:
                 value['notice'] = dict(id=row['id'], level=value['level'], reason=reason,
                                       phase=row.get('phase'), diagnosis='unknown', policy_revision=revision)
                 value['trigger'] = dict(value['notice'])
+                if evidence:
+                    value['trigger']['evidence'] = evidence
             db.execute('INSERT INTO incidents VALUES (?,?,?,?)', (row['id'], key, incident['time'], json.dumps(incident)))
             self.write_row(db, key, value)
             db.execute('DELETE FROM incidents WHERE device=? AND id NOT IN '

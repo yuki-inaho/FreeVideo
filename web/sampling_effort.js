@@ -99,6 +99,7 @@ export function createSamplingEffort(t, {onChange, onPreview = () => {}, levels 
     const header = el('div', 'fv-effort-heading');
     const label = el('span', '', t('Quality', '质量'));
     const estimate = el('span', 'fv-effort-estimate');
+    const warning = el('div', 'fv-effort-warning'); warning.hidden = true;
     // The names under the track show the level; the heading does not repeat it.
     header.append(label, estimate);
     const rail = el('div', 'fv-effort-rail'); rail.tabIndex = 0;
@@ -119,7 +120,7 @@ export function createSamplingEffort(t, {onChange, onPreview = () => {}, levels 
         names.append(b); return b;
     });
     const custom = el('span', 'fv-effort-custom', t('Custom steps', '自定义步数')); custom.hidden = true;
-    element.append(header, rail, names, custom);
+    element.append(header, warning, rail, names, custom);
     let selected = 0, disabled = false, pointer = null, draft = 0, currentSteps = 8, currentRefine = 3, twoPass = true, stepCache = null, upscale = 2, reason = '';
     function paint(position) {
         element.style.setProperty('--fv-position', position / 3);
@@ -200,5 +201,5 @@ export function createSamplingEffort(t, {onChange, onPreview = () => {}, levels 
         efforts = next;
         update({baseSteps: currentSteps, refineSteps: currentRefine, twoPass, stepCache, upscale, disabled, reason});
     }
-    return {element, update, setLevels, levels: () => efforts, setEstimate(text, title = '') { estimate.textContent = text; if (title) estimate.title = title; else estimate.removeAttribute('title'); }, dispose: cancel};
+    return {element, update, setLevels, levels: () => efforts, setWarning(text) { warning.textContent = text; warning.hidden = !text; }, setEstimate(text, title = '') { estimate.textContent = text; if (title) estimate.title = title; else estimate.removeAttribute('title'); }, dispose: cancel};
 }

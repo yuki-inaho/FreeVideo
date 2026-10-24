@@ -15,5 +15,10 @@ body:
   - type: textarea
     id: report
     attributes:
-      label: Error or local report (optional) / 错误详情或本地报告（选填）
-      description: Attach the diagnostic report (FreeVideo-report-….json, or video.debug.json in the output folder) if available; it includes hardware and timing information. / 如有诊断报告（FreeVideo-report-….json，或输出文件夹里的 video.debug.json），可拖入此处；其中已包含硬件和耗时信息。
+      label: Diagnostic report / 诊断报告
+      description: |
+        In FreeVideo, select Diagnostic report under a finished video. If the generation failed, select Report a problem on the error message. The report (FreeVideo-report-….json or .zip) is saved in your browser's download folder. Drag it here. For FreeVideo before 0.3.10, use video.debug.json in the output folder.
+        在 FreeVideo 中，视频生成完成后点击视频下方的「诊断报告」；生成失败时点击错误提示上的「提交问题」。报告（FreeVideo-report-….json 或 .zip）保存在浏览器的下载文件夹，请将它拖到这里。0.3.10 之前的版本使用输出文件夹里的 video.debug.json。
+      placeholder: Drop FreeVideo-report-….json or .zip here / 将 FreeVideo-report-….json 或 .zip 拖到这里
+    validations:
+      required: true

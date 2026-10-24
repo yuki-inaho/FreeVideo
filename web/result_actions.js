@@ -1,7 +1,7 @@
 import { api } from '../../scripts/api.js';
 import { outputDownloadURL } from './output_download.js';
 import { shareButton } from './share.js';
-import { canExtend, extendText, extendSourceExists } from './studio_extend.js';
+import { canExtend, extendText, extendSourceProblem, extendSourceState } from './studio_extend.js';
 import { issueButton } from './issue_button.js';
 
 const css = document.createElement('link');
@@ -74,7 +74,7 @@ export function secondPassAction(t, run) {
         try { await run(); label.textContent = button.title = t('Queued', '已加入队列'); }
         catch {
             button.disabled = false;
-            label.textContent = button.title = t('Second pass did not start · Retry', '二采没有开始 · 重试');
+            label.textContent = button.title = t('Second pass did not start · retry', '二采没有开始 · 重试');
             problem = issueButton(t, () => ({where: ['Second pass', '二采'], message: label.textContent}));
             button.after(problem);
         } finally { button.removeAttribute('aria-busy'); }
@@ -152,20 +152,21 @@ export function resultActions(record, t, {diagnostic = null, secondPass = null, 
             problem = issueButton(t, () => ({where: ['Continue video', '延长视频'], message: label.textContent}));
             button.after(problem);
         };
-        const available = exists => {
-            label.textContent = exists ? extendText(t, 'action') : t('Video unavailable · retry', '视频不可用 · 重试');
+        // Only a video the server says is gone keeps the issue button; a check that could not finish just retries.
+        const available = state => {
+            label.textContent = state === 'ok' ? extendText(t, 'action') : `${extendSourceProblem(t, state)} · ${t('retry', '重试')}`;
             button.title = '';
-            if (exists) problem?.remove(); else fault();
+            if (state === 'missing') fault(); else problem?.remove();
+            return state === 'ok';
         };
-        extendSourceExists(api, record).then(available);
+        extendSourceState(api, record).then(available);
         button.onclick = async () => {
             if (button.disabled) return;
             problem?.remove();
             button.disabled = true;
             button.title = t('Checking video…', '正在检查视频…');
             try {
-                const exists = await extendSourceExists(api, record); available(exists);
-                if (!exists) return;
+                if (!available(await extendSourceState(api, record))) return;
                 if (await extend(record) === null) throw new Error(t('Could not open the editor. Try again.', '无法打开剪辑，请重试。'));
             } catch (error) {
                 label.textContent = error.message || t('Could not open the editor. Try again.', '无法打开剪辑，请重试。');

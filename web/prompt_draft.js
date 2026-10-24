@@ -16,6 +16,15 @@ const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const watched = new WeakMap(), dirty = new Set();
 const historyObservers = new WeakSet(), restoringHistory = new WeakSet();
 let timer = null, pending = null, inFlight = null, sending = null;
+// What the page could not do with the draft file, so the prompt box can say so and retry.
+const trouble = {save: false, restore: false}, troubleWatchers = new Set();
+function setTrouble(key, value) {
+    if (trouble[key] === value) return;
+    trouble[key] = value;
+    for (const watcher of troubleWatchers) watcher({...trouble});
+}
+export function promptDraftTrouble() { return {...trouble}; }
+export function watchPromptDraftTrouble(watcher) { troubleWatchers.add(watcher); return () => troubleWatchers.delete(watcher); }
 try { pending = JSON.parse(globalThis.sessionStorage?.getItem(OUTBOX) || 'null'); } catch {}
 
 function retain() {
@@ -177,14 +186,16 @@ export async function savePromptDraft(api, keepalive = false) {
         try {
             const reply = await api.fetchApi(FILE, {cache: 'no-store', keepalive});
             if (!reply.ok && reply.status !== 404) throw new Error('draft_read');
-            const current = reply.ok ? await reply.json() : null;
+            // A damaged file can never be merged into; the next save replaces it.
+            const current = reply.ok ? await reply.json().catch(() => null) : null;
             const saved = await api.fetchApi(FILE + '?overwrite=true', {method: 'POST',
                 headers: {'Content-Type': 'application/json'}, body: JSON.stringify(combine(current, patch)), keepalive});
             if (!saved.ok) throw new Error('draft_write');
-            sending = null; retain(); return true;
+            sending = null; retain(); setTrouble('save', false); return true;
         } catch {
             const newer = pending; pending = patch; sending = null;
             if (newer) addPatch(newer); else retain();
+            setTrouble('save', true);
             return false;
         }
     };
@@ -195,11 +206,13 @@ export async function savePromptDraft(api, keepalive = false) {
 export async function restorePromptDraft(api, workflow, project = null) {
     // A refreshed page retries its own unsaved patch before launcher restoration.
     if (pending || inFlight || dirty.size) await savePromptDraft(api);
-    let draft;
+    let draft, unread = false;
     try {
         const reply = await api.fetchApi(FILE, {cache: 'no-store'});
-        if (reply.ok) draft = await reply.json();
-    } catch { /* Keep the workflow and any local edits if the server is offline. */ }
+        // Only a missing file means there is no earlier prompt.
+        if (reply.ok) draft = await reply.json(); else unread = reply.status !== 404;
+    } catch { unread = true; /* Keep the workflow and any local edits if the server is offline. */ }
+    setTrouble('restore', unread);
     // A failed retry remains authoritative over the older remote copy. Retain
     // the outbox until a later explicit save succeeds, including across reloads.
     const local = pending || sending ? mergePatches(sending, pending) : null;

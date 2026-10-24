@@ -145,7 +145,7 @@ def _safe_error(error):
     rows = [_safe_row(row) for row in details] if isinstance(details, list) and details else []
     if rows and all(rows):
         result.update(details=rows, message='; '.join(row['message'] for row in rows))
-    return dict(result, error_zh=errors.failure_reason(error))
+    return dict(result, **errors.reasons(error))
 
 
 def failure(view):
@@ -177,7 +177,12 @@ class Productions:
         jobs.parent_allowed = self.allows
 
     def load(self):
-        for path in sorted(self.directory.glob('*.json')):
+        try:
+            paths = sorted(self.directory.glob('*.json'))
+        except OSError:
+            logging.getLogger(__name__).warning('Could not list saved films; starting without them')
+            return
+        for path in paths:
             try:
                 record = json.loads(path.read_text(encoding='utf-8'))
                 state = record['state']
@@ -209,8 +214,13 @@ class Productions:
                                                         record['stalled']['code'])
                 self.records[state['id']] = record
             except (ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError, OSError):
-                path.replace(path.with_name(path.name + '.bad-' + uuid.uuid4().hex))
-                logging.getLogger(__name__).warning('Isolated an invalid production receipt; other films remain available')
+                try:
+                    path.replace(path.with_name(path.name + '.bad-' + uuid.uuid4().hex))
+                except OSError:
+                    # A receipt that cannot be moved aside is left in place; the agent still starts.
+                    logging.getLogger(__name__).warning('Skipped an invalid production receipt that could not be renamed')
+                else:
+                    logging.getLogger(__name__).warning('Isolated an invalid production receipt; other films remain available')
 
     def _stalled(self, error):
         code = error.code if isinstance(getattr(error, 'code', None), str) and error.code in errors.ERRORS else 'internal_error'
@@ -404,6 +414,24 @@ class Productions:
         except Exception:  # Timing is optional; a forecast failure must not reject a film or job.
             return dict(seconds=None, basis=None, reason='unavailable')
 
+    def _shape(self, state, only=None):
+        """Size and length of what a confirmation asks to make: the first shot's canvas, every shot's seconds added up."""
+        try:
+            rows = []
+            for shot in state['shots']:
+                take = next((t for s, t in self._takes(state) if s is shot and not t['stale'] and t['state'] != 'cancelled'), None)
+                if take is None or only not in (None, shot['id']):
+                    continue
+                item = deepcopy(take['spec'])
+                if shot['continues']:
+                    item['continue_from'] = dict(from_job='j000000000000')
+                rows.append(spec.normalize(item, port=self.jobs.port))
+            if not rows:
+                return {}
+            return dict(width=rows[0]['width'], height=rows[0]['height'], seconds=round(sum(row['seconds'] for row in rows), 3))
+        except Exception:  # The card is complete without it; a failure here must not reject a film.
+            return {}
+
     def _join_estimate(self, state, previous=None):
         """Use only successful local joins with the same input geometry and transition."""
         shapes = []
@@ -580,6 +608,7 @@ class Productions:
             self._prepare_estimates(record)
             if self.gate is not None:
                 self.gate('start', by=by, estimate_seconds=self._progress(record)['estimate_seconds'],
+                          shape=self._shape(state),
                           refs={},  # the film gets its ID only when the approved call repeats
                           question='Start shooting %s (%d shots)?' % (_quoted(state['title']), len(state['shots'])))
             result = self._view(record)
@@ -628,7 +657,7 @@ class Productions:
         value['progress'] = self._progress(record)
         value['over_budget'] = self._elapsed_budget(value['progress'])
         error, _ = failure(value)
-        value['error_zh'] = errors.failure_reason(error) if error else None
+        value['error_zh'], value['error_en'] = (errors.failure_reason(error), errors.failure_reason_en(error)) if error else (None, None)
         return value
 
     def get(self, identity, *, since=None, wait=0, compact=True):
@@ -654,7 +683,7 @@ class Productions:
             join = next((j for j in state['joins'] if j['ref'] == state['current_join']), None)
             error, _ = failure(dict(stalled=record.get('stalled'), join=join, shots=state['shots']))
             if error:
-                value['error_zh'] = errors.failure_reason(error)
+                value.update(errors.reasons(error))
             return value
         return dict(self._view(record), changed=changed)
 
@@ -704,7 +733,7 @@ class Productions:
                 shot = next((s for s in view['shots'] if s['chosen'] is None), view['shots'][-1])
                 result.append(dict(id=view['id'], title=view['title'], status=view['status'], revision=view['revision'],
                     shot=shot['index'], shots=len(view['shots']), next=view['todo'][0] if view['todo'] else None,
-                    paused=view['paused'], stalled=view['stalled'], session=record.get('session'), error_zh=view['error_zh']))
+                    paused=view['paused'], stalled=view['stalled'], session=record.get('session'), error_zh=view['error_zh'], error_en=view['error_en']))
             return result
 
     def _mutate(self, action, identity, *, by, ref=None, client=None, **values):
@@ -734,7 +763,7 @@ class Productions:
                 if self.gate is not None:
                     shot = next(s for s in state['shots'] if s['id'] == values['shot'])
                     self.gate('reshoot', by=by, estimate_seconds=sum(estimates) if known else None,
-                              refs=dict(drama=identity, shot=shot['id']),
+                              refs=dict(drama=identity, shot=shot['id']), shape=self._shape(state, shot['id']),
                               question='Reshoot shot %d of %s?' % (shot['index'], _quoted(state['title'])))
             if ref:
                 draft['receipts'].append(dict(key=ref, digest=digest, result=result,

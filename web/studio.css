@@ -97,6 +97,7 @@
 .fv-studio .fv-stage[data-short=true] .fv-generation-heading{flex-direction:row;gap:16px}
 .fv-studio .fv-stage[data-short=true] .fv-generation-count{font-size:20px}
 .fv-studio .fv-stage[data-short=true] .fv-generation-times{display:none}
+.fv-studio .fv-stage .fv-generation-progress.fv-generation-waiting .fv-generation-count,.fv-studio .fv-stage .fv-generation-progress.fv-generation-waiting .fv-generation-times{display:none}
 .fv-studio .fv-stage-media video{animation:fv-preview-appear .55s ease}
 @keyframes fv-preview-appear{from{opacity:0}to{opacity:1}}
 /* One metrics card; the 1 px gaps draw the dividers in any column count. */

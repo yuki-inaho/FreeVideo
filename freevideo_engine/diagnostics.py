@@ -42,7 +42,11 @@ ABSOLUTE_PATH = re.compile(
     # The preceding character guard prevents URL slashes from being treated
     # as local paths while still matching a drive path after prose such as
     # ``at C:\\Users\\...`` or a quoted traceback location.
-    r'''(?<![A-Za-z0-9_:/])(?:(?:[A-Za-z]:[\\/])|(?:\\\\[^\\/\s"'<>]+[\\/])|/(?!/))[^"'<>;\r\n,\)\]}]*''')
+    # Consume explicit relative paths too, spaces included, so an interior
+    # slash (after e.g. a hyphen) cannot subsequently be mistaken for an
+    # absolute path. Only our own ``./setup.sh`` command stays as written.
+    r'''(?<![A-Za-z0-9_:/])(?:(?P<command>\./setup\.sh(?![\w/\\-]|\.\w))|\.{1,2}/[^"'<>;\r\n,\)\]}]*|'''
+    r'''(?:(?:[A-Za-z]:[\\/])|(?:\\\\[^\\/\s"'<>]+[\\/])|/(?!/))[^"'<>;\r\n,\)\]}]*)''')
 
 
 class Redactor:
@@ -97,6 +101,8 @@ class Redactor:
     @classmethod
     def _path_match(cls, match):
         value = match.group(0)
+        if match.group('command') is not None:
+            return value
         # Text is often redacted again (a worker's log inside a report, the
         # launcher terminal).  The ``/name`` after an earlier ``<PATH>`` is that
         # pass's own output, unless it still has a directory in it.

@@ -9,14 +9,16 @@ import time
 import traceback
 
 from .. import __version__
+from ..disk_space import ran_out
 from ..exit_diagnostics import clean_reading, clean_sample
 from ..failure_details import Redactor
 
 
 ERRORS = frozenset(('no_memory', 'small_memory', 'busy_video', 'busy', 'pack_missing', 'model_unreadable',
-                    'device_unavailable', 'worker_exit', 'timeout', 'cancelled',
+                    'device_unavailable', 'worker_exit', 'timeout', 'cancelled', 'disk_full',
                     'invalid_request', 'invalid_media', 'invalid_points', 'segment_not_installed', 'generation_failed'))
-NO_REPORT = frozenset(('small_memory', 'busy', 'invalid_request', 'invalid_media', 'invalid_points', 'segment_not_installed', 'cancelled'))
+NO_REPORT = frozenset(('small_memory', 'busy', 'invalid_request', 'invalid_media', 'invalid_points', 'segment_not_installed', 'cancelled',
+                       'disk_full'))
 STAGES = ('start', 'load', 'text', 'encode', 'denoise', 'decode')
 KINDS = ('generate', 'edit', 'cast', 'compose', 'download', 'install')
 MESSAGE_ZH = {
@@ -29,6 +31,7 @@ MESSAGE_ZH = {
     'device_unavailable': '显卡暂时用不了，稍后再试。',
     'worker_exit': '图像生成意外停止了，请再试一次。',
     'timeout': '这一张用时太长，已停止。请再试一次。',
+    'disk_full': '保存图片时出错：磁盘空间不够，空出空间后再生成。',
     'generation_failed': '图像生成出错了，请再试一次。',
     'invalid_request': '图片设置有误，请调整后重试。',
     'invalid_media': '图片无效，请重新选择输入目录中的图片。点选支持不超过 4096×4096 像素总数的图片。',
@@ -76,6 +79,8 @@ def classify_exception(error, *, stage='start', cancelled=False):
         names = {cls.__name__ for cls in type(item).__mro__}
         if isinstance(item, MemoryError) or 'OutOfMemoryError' in names or _MPS_MEMORY.search(str(item)):
             return 'no_memory'
+    if chain and ran_out(chain[0]):
+        return 'disk_full'
     for item in chain:
         cuda_init = any(frame.f_globals.get('__name__') == 'torch.cuda'
                         and frame.f_code.co_name in ('_lazy_init', '_check_driver')
@@ -282,7 +287,10 @@ class Context:
         hardware = {key: clean(value, self.redactor) for key, value in hardware.items()}
         geometry = {key: self.request[key] for key in ('width', 'height') if key in self.request}
         plan = safe_plan(row.get('plan') if row.get('plan') is not None else self.plan, self.redactor)
-        return dict(schema='freevideo.image-report', schema_version=1,
+        # Macs only: which attention kernel ran and why it left MLX (mlx_attention.summary).
+        attention = row.get('attention')
+        extra = dict(attention=clean(attention, self.redactor)) if isinstance(attention, dict) else {}
+        return dict(schema='freevideo.image-report', schema_version=1, **extra,
                     created_at=datetime.now(timezone.utc).isoformat(), kind=self.kind,
                     analysis=dict(version=__version__, hardware=hardware, geometry=geometry),
                     summary=dict(request_seconds=self.timing.seconds()), request=dict(self.request),

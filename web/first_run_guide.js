@@ -30,7 +30,7 @@ export const CHAPTERS = [
         en: 'For a longer video, enter a longer duration and it is made in parts automatically. You can also add parts one by one in "Edit".',
         zh: '填写更长的时长会自动分段生成，也可在“剪辑视图”中逐段接续。'},
     {id: 'agent', anchor: '[data-fv-guide="agent"]', added: true,
-        en: 'To have an AI agent such as Claude Code or Codex make videos for you, choose "Autopilot".', zh: '要让 Claude Code、Codex 等 Agent 替你生\u2060成\u2060视\u2060频，点“AI 全自动”。'},
+        en: 'To have an AI agent such as Claude Code or Codex make videos for you, choose "Autopilot".', zh: '要让 Claude Code、Codex 等 Agent 生\u2060成\u2060视\u2060频，点“AI 全自动”。'},
     {id: 'editor-timeline', group: 'editor', anchor: '[data-fv-guide="editor-timeline"]', added: true,
         en: 'Drag a video here.', zh: '把视频拖到这里。'},
     {id: 'editor-trim', group: 'editor', anchor: '[data-fv-guide="editor-trim"]', added: true,

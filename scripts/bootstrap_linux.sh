@@ -217,7 +217,7 @@ fv_download_uv() {
             [[ "$url" != *$'\n'* && "$url" != *$'\r'* && "$url" != *'"'* && "$url" != *"\\"* ]] || { fv_fail 'Invalid mirror URL.'; return 1; }
             part="$archive.partial.$(date +%s).$$.$attempt"
             if printf 'url = "%s"\n' "$url" | fv_with_route "$route" curl --disable --config - --fail --location --silent --show-error \
-                --connect-timeout 5 --max-time 120 --speed-limit 1024 --speed-time 20 --retry 1 \
+                ${FREEVIDEO_CURL_PROXY_CA:+--proxy-cacert "$FREEVIDEO_CURL_PROXY_CA"} --connect-timeout 5 --max-time 120 --speed-limit 1024 --speed-time 20 --retry 1 \
                 --retry-max-time 130 --output "$part" >>"$FREEVIDEO_BOOTSTRAP_ROOT/bootstrap.log" 2>&1; then
                 if printf '%s  %s\n' "$FV_UV_SHA256" "$part" | sha256sum --check --status; then
                     mv -- "$part" "$archive"

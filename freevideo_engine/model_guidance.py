@@ -13,7 +13,7 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
-from . import network
+from . import __version__, network
 from .long_paths import io_path, plain_errors
 from .model_status import FAMILIES, NAMES, family
 
@@ -129,7 +129,7 @@ def download_files(entries):
     return result
 
 
-def download_view(plan, zh=False, *, decimal_sizes=False):
+def download_view(plan, zh=False, *, decimal_sizes=False, families=LIST_FAMILIES, extra_copy=None):
     from .launcher_copy import size_text
     def size(value):
         if value < (10**6 if decimal_sizes else 2**20):
@@ -137,9 +137,10 @@ def download_view(plan, zh=False, *, decimal_sizes=False):
             return ('不到 1 ' if zh else 'under 1 ') + unit
         return size_text(value, decimal_sizes=decimal_sizes)
     copy = download_copy(zh)
+    copy.update({key: value[bool(zh)] for key, value in (extra_copy or {}).items()})
     rows = plan.get('download_files', [])
     groups = []
-    for group in LIST_FAMILIES:
+    for group in families:
         files = [dict(row, name=row['file'], size=size(row['bytes'])) for row in rows if row['group'] == group]
         amount = sum(row['bytes'] for row in files)
         groups.append(dict(id=group, title=copy[group], files=files, count=len(files), bytes=amount,
@@ -196,6 +197,10 @@ def export_download_list(plan, folder, source='auto'):
                  'SHA256SUMS': '\n'.join(sums) + ('\n' if sums else ''),
                  'urls.txt': '\n'.join(urls) + ('\n' if urls else ''),
                  'README.txt': DOWNLOAD_COPY['readme'][1] + '\n' + DOWNLOAD_COPY['readme'][0]}
+    return publish_export(folder, documents)
+
+
+def publish_export(folder, documents, folder_name=EXPORT_FOLDER, generator=GENERATOR):
     # Finish every file before anything appears or is replaced. No payload is downloaded.
     stage = None
     try:
@@ -210,7 +215,7 @@ def export_download_list(plan, folder, source='auto'):
         # Two launchers exporting into one folder take turns: the five files
         # always come from the same export.
         with export_lock(folder):
-            target, earlier = export_target(folder)
+            target, earlier = export_target(folder, folder_name, generator)
             if earlier:
                 replace_export(stage, target)
             else:
@@ -222,6 +227,109 @@ def export_download_list(plan, folder, source='auto'):
         if stage is not None:
             shutil.rmtree(stage, ignore_errors=True)
     return str(target)
+
+
+# The optional image model has its own list: files laid out as FreeVideo keeps them, one export folder of its own.
+IMAGE_FOLDER = 'image_gen'
+IMAGE_EXPORT_FOLDER = 'FreeVideo-image-model-download-list'
+IMAGE_GENERATOR = 'FreeVideo image model download list'
+IMAGE_COPY = {
+    'image': NAMES['image'],
+    'guide': ('Download the files with the exported list and place them as its README.txt describes. '
+              'Back in the launcher, choose Resume on Image generation models; FreeVideo checks every file before using it.',
+              '用导出的清单下载这些文件，按清单里 README.txt 的说明放好。'
+              '回到启动器，在“图像生成模型”处点“继续”，FreeVideo 校验每个文件后才会使用。'),
+    # The list needs no re-check, so the shared "Check again" text does not apply.
+    'error_changed': ('The download list could not be generated. Restart the launcher and try again.',
+                      '下载清单未能生成，请重启启动器后再试。'),
+    # {model_folder} is replaced with the folder that holds image_gen.
+    'readme': (
+        'FreeVideo image generation models download list\n'
+        '\n'
+        'Run this command in this folder:\n'
+        'aria2c --input-file=aria2.txt --continue=true --check-integrity=true\n'
+        '\n'
+        'You can also import urls.txt into another download tool. urls.txt uses the download source chosen in Settings (Automatic uses Hugging Face).\n'
+        '\n'
+        'When the download finishes, copy the image_gen folder inside payload into the folder below, merging it with any image_gen folder already there:\n'
+        '{model_folder}\n'
+        'Then return to the launcher and choose "Resume" on Image generation models. '
+        'FreeVideo checks every file by its checksum and downloads again any file that is missing or damaged.\n'
+        '\n'
+        'SHA256SUMS lists the checksum of every file. This list covers only the image generation models; the video model list is exported separately.\n',
+        'FreeVideo 图像生成模型下载清单\n'
+        '\n'
+        '在这个文件夹里运行下面的命令：\n'
+        'aria2c --input-file=aria2.txt --continue=true --check-integrity=true\n'
+        '\n'
+        '也可以把 urls.txt 导入其他下载工具。urls.txt 用的是设置里选中的下载源（选“自动”时用 Hugging Face）。\n'
+        '\n'
+        '下载完成后，把 payload 里的 image_gen 文件夹复制到下面这个文件夹，和其中已有的 image_gen 合并：\n'
+        '{model_folder}\n'
+        '然后回到启动器，在“图像生成模型”处点“继续”。FreeVideo 会按校验值逐个检查文件，缺少或损坏的文件会重新下载。\n'
+        '\n'
+        'SHA256SUMS 列出每个文件的校验值。这份清单只含图像生成模型，视频模型的清单另外导出。\n'),
+}
+
+
+def image_files():
+    """The image model's files as list rows; the catalog ships with the engine and is validated on load."""
+    from .image_gen import image_pack
+    result = []
+    for row in image_pack.rows():
+        ids = {source['id'] for source in row['sources']}
+        link = lambda name: network.model_url(row, name, env={}) if name in ids else ''
+        result.append(dict(group='image', repo=row['repo'], hf_revision=row['revision'],
+            modelscope_repo='', modelscope_revision='', file=row['file'], bytes=row['bytes'], sha256=row['sha256'],
+            relative_path='/'.join(('payload', IMAGE_FOLDER, row['file'])),
+            hf_url=link('official'), hf_mirror_url=link('hf-mirror'), modelscope_url=link('modelscope')))
+    return result
+
+
+def image_download_view(zh=False, *, decimal_sizes=False):
+    view = download_view(dict(download_files=image_files()), zh, decimal_sizes=decimal_sizes,
+                         families=('image',), extra_copy=IMAGE_COPY)
+    return dict(view, scope='image', reused='')
+
+
+def export_image_download_list(folder, source='auto', model_folder=None):
+    """Only the image model, with every source; nothing of the video list changes.
+
+    model_folder is where the README tells the user to put image_gen: the folder the
+    launcher looks in, or the installed model folder when none is given.
+    """
+    folder = Path(folder).expanduser().resolve()
+    if not folder.is_dir():
+        raise DownloadListError('folder')
+    if source not in ('auto', 'official', 'hf-mirror', 'modelscope'):
+        raise DownloadListError('changed')
+    if model_folder is None:
+        from .paths import installed_model_root
+        model_folder = installed_model_root()
+    rows = image_files()
+    aria, sums, urls, outputs = [], [], [], set()
+    for row in rows:
+        relative = row['relative_path']
+        path = PurePosixPath(relative)
+        if (path.is_absolute() or any(part in ('', '.', '..') for part in relative.split('/'))
+                or any(char in relative for char in '\\:\r\n\t\x00') or relative in outputs
+                or not re.fullmatch('[0-9a-f]{64}', row['sha256'] or '') or not row['hf_url']
+                or type(row['bytes']) is not int or row['bytes'] <= 0):
+            raise DownloadListError('changed')
+        outputs.add(relative)
+        aria.extend(['\t'.join(url for url in (row['hf_url'], row['hf_mirror_url'], row['modelscope_url']) if url),
+                     '  dir=' + path.parent.as_posix(), '  out=' + path.name,
+                     '  checksum=sha-256=' + row['sha256']])
+        sums.append(row['sha256'] + '  ' + relative)
+        chosen = {'official': 'hf_url', 'auto': 'hf_url', 'hf-mirror': 'hf_mirror_url', 'modelscope': 'modelscope_url'}[source]
+        urls.append(row[chosen] or row['hf_url'])
+    manifest = dict(schema_version=1, generator=IMAGE_GENERATOR, engine_version=__version__, source=source,
+                    total_bytes=sum(row['bytes'] for row in rows), files=rows)
+    documents = {'manifest.json': json.dumps(manifest, ensure_ascii=False, indent=2) + '\n',
+                 'aria2.txt': '\n'.join(aria) + '\n', 'SHA256SUMS': '\n'.join(sums) + '\n',
+                 'urls.txt': '\n'.join(urls) + '\n',
+                 'README.txt': (IMAGE_COPY['readme'][1] + '\n' + IMAGE_COPY['readme'][0]).replace('{model_folder}', str(model_folder))}
+    return publish_export(folder, documents, IMAGE_EXPORT_FOLDER, IMAGE_GENERATOR)
 
 
 def export_lock(folder, wait=30.):
@@ -245,7 +353,7 @@ def export_lock(folder, wait=30.):
             time.sleep(.1)
 
 
-def earlier_export(path):
+def earlier_export(path, generator=GENERATOR):
     """A folder this launcher exported before, identified by its manifest."""
     try:
         if path.is_symlink() or not path.is_dir():
@@ -253,18 +361,18 @@ def earlier_export(path):
         value = json.loads((path / 'manifest.json').read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return False
-    return isinstance(value, dict) and value.get('generator') == GENERATOR
+    return isinstance(value, dict) and value.get('generator') == generator
 
 
-def export_target(folder):
+def export_target(folder, name=EXPORT_FOLDER, generator=GENERATOR):
     """(folder, earlier): our earlier export is refreshed; anything else is left alone."""
     for index in range(1, 100):
-        path = folder / (EXPORT_FOLDER if index == 1 else '%s-%d' % (EXPORT_FOLDER, index))
+        path = folder / (name if index == 1 else '%s-%d' % (name, index))
         if not os.path.lexists(path):
             return path, False
-        if earlier_export(path):
+        if earlier_export(path, generator):
             return path, True
-    raise OSError(errno.EEXIST, 'Too many folders named ' + EXPORT_FOLDER)
+    raise OSError(errno.EEXIST, 'Too many folders named ' + name)
 
 
 def replace_export(stage, target):

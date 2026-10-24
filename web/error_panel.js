@@ -3,6 +3,7 @@ import {repairAction} from './repair_hint.js';
 import {detectBrowserExtension, browserExtensionAdvice, extensionSteps, isNetworkTypeError, connectionLostText} from './browser_extension.js';
 import {SAMPLING_EFFORTS, STEP_CACHES, UPSCALE_FACTORS, tableLevel} from './sampling_effort.js';
 import {failureIssue, failureStage} from './failure_issue.js';
+import {focusReportTip, reportIssue, showReportTip} from './report_issue.js';
 const reports = new WeakSet();
 const captured = new WeakMap();
 const diagnosticReports = new WeakSet();
@@ -12,6 +13,10 @@ const record = value => value && typeof value === 'object' && !Array.isArray(val
 
 // The engine's own messages for errors people can fix themselves.
 const PLAIN_ERRORS = [
+    {key: 'engine-busy', message: 'Setup, testing or generation is already using this installation/GPU lock. Retry after it finishes.',
+        title: ['FreeVideo is busy with another task', 'FreeVideo 正在处理另一个任务'],
+        summary: ['Try again when it finishes. If nothing else is running, close duplicate FreeVideo instances, then try again.',
+            '请在它完成后重试。若没有其他任务在进行，请关闭重复运行的 FreeVideo 后重试。']},
     {key: 'continuation-missing', message: 'The previous video has no usable continuation data. Generate it again with this version of FreeVideo.',
         title: ['This video cannot be continued', '这个视频暂时不能接续'],
         summary: ['Generate the previous video again, then continue it.', '请重新生成上一段视频，再接续。']},
@@ -39,6 +44,9 @@ const PLAIN_ERRORS = [
     {key: 'continuation-media', message: 'Continue from video cannot be used with these settings. Connect up to 3 pictures as references, and remove video, audio and pre-encoded inputs.',
         title: ['A continued part takes picture references only', '接续段只能用图片参考'],
         summary: ['Connect up to 3 pictures as references, and remove video, audio and pre-encoded inputs.', '最多接 3 张图片作为参考图，并移除视频、音频参考和预编码输入。']},
+    {key: 'media-mixed-layout', message: 'Choose keyframes or experimental references; mixed layouts are not supported',
+        title: ['First and last frames cannot be used with references', '首尾帧不能和参考素材同时使用'],
+        summary: ['Turn off the media cards or inputs you are not using, then generate again.', '请关闭本次不用的素材卡片或输入，再重新生成。']},
     {key: 'continuation-frames', message: 'Frame count must be 5 + 17n and at least 39 (39, 56, 73, 90, ...).',
         aliases: ['Frames must be 0 to use Duration, or 5 + 17n and at least 39 (for example, 39, 56, 141 or 243). The total includes 22 overlap frames when continuing.'],
         title: ['Choose a supported frame count', '请选择支持的帧数'],
@@ -58,6 +66,10 @@ const PLAIN_ERRORS = [
             'Unsupported LoRA tensor (no patches are ignored): ', 'Adapter contains no LoRA factors', 'Expected matching 2-D LoRA factors', 'Incomplete LoRA pair'],
         title: ['This LoRA cannot be used', '此 LoRA 无法使用'],
         summary: ['This LoRA is not made for the FreeVideo model. Turn it off or remove it, then generate again.', '此 LoRA 不适用于 FreeVideo 的模型。请关闭或移除后重新生成。']},
+    {key: 'lora-acceleration', message: 'This acceleration LoRA was made for the original model and cannot be used. The FreeVideo model is already accelerated and does not need one.',
+        title: ['This LoRA cannot be used', '此 LoRA 无法使用'],
+        summary: ['The FreeVideo model is already accelerated and does not need an acceleration LoRA. Turn this LoRA off or remove it, then generate again.',
+            'FreeVideo 的模型已经加速，无需加速 LoRA。请关闭或移除此 LoRA 后重新生成。']},
     {key: 'lora-int8', message: 'This LoRA changes parts of the model that the int8 version cannot merge yet, so it cannot be used for now. LoRAs that change only linear layers work.',
         title: ['This LoRA cannot be used', '此 LoRA 无法使用'],
         summary: ['The int8 version cannot merge the layers this LoRA changes yet. Turn it off or remove it, then generate again.',
@@ -94,6 +106,24 @@ function knownError(text) {
     }
     return PLAIN_ERRORS.find(error => line === error.message || error.aliases?.includes(line)
         || error.prefixes?.some(prefix => line.startsWith(prefix)))?.key ?? null;
+}
+
+// The media node's own check (comfy_assets.resolve_assets) names a file that is no longer in ComfyUI's
+// input folder. Only ComfyUI's custom-validation entry counts, so typed text quoting the sentence never does.
+// Returns the file's name, or null. A part of a long video carries the entry after its message (comfy_chain).
+function missingMedia(detail) {
+    if (reports.has(detail)) return null;   // A saved report holds no chosen input.
+    let nodes = record(record(detail?.response).node_errors ?? detail?.node_errors);
+    const part = /^Prompt outputs failed validation; (\{.*\})$/s.exec(typeof detail === 'string' ? detail : scalar(detail?.message));
+    if (!Object.keys(nodes).length && part) {
+        try { nodes = {part: JSON.parse(part[1])}; } catch { /* not the part's entry */ }
+    }
+    for (const node of Object.values(nodes)) for (const reason of list(node?.errors)) {
+        const found = reason?.type === 'custom_validation_failed'
+            && /^\w+ - Upload or select the missing media file: (.+)$/s.exec(scalar(reason.details));
+        if (found) return found[1].split(/[\\/]/).filter(Boolean).at(-1) || '';
+    }
+    return null;
 }
 
 // When a diagnostic report exists the card hides Export report; the same advice
@@ -199,7 +229,8 @@ function reportRedactor(detail, context) {
             .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '<ADDRESS REMOVED>');
         // Keep traceback source basenames and line numbers, never drive names,
         // home directories or private media filenames. Spaces in paths count.
-        text = text.replace(/(^|[^A-Za-z0-9_:/<>])((?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/]|\/(?![\/\s]))[^\r\n"'<>;,\)\]]+)/gm, (_, prefix, path) => {
+        text = text.replace(/(^|[^A-Za-z0-9_:/<>])(\.\/setup\.sh(?![\w\/\\-]|\.\w)|\.{1,2}\/[^\r\n"'<>;,\)\]]*|(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/]|\/(?![\/\s]))[^\r\n"'<>;,\)\]]+)/gm, (_, prefix, path) => {
+            if (path === './setup.sh') return prefix + path;
             const source = path.replace(/\\/g, '/').match(/\/([A-Za-z0-9_.-]+\.(?:py|js|ts|mjs))(?=[:\s]|$)/);
             return prefix + (source ? '<PATH>/' + source[1] + path.slice(path.indexOf(source[1]) + source[1].length) : '<PATH REMOVED>');
         });
@@ -246,7 +277,8 @@ export function createErrorReport(detail, context = {}) {
     for (const key of ['done', 'total']) if (Number.isFinite(context.progress?.[key])) progress[key] = context.progress[key];
     const message = scalar(response.error?.message) || scalar(response.error) || scalar(response.message)
         || scalar(detail?.exception_message) || scalar(detail?.message) || scalar(detail) || 'FreeVideo generation failed.';
-    const known = knownError(message);
+    // The missing file's name is not kept: the report never holds typed or chosen input.
+    const known = knownError(message) ?? (missingMedia(detail) === null ? null : 'media-missing');
     const kind = failureAdvice(errorText(detail), (en) => en, known).kind;
     const found = detectBrowserExtension(detail, {kind, known, scrub: clean.inputsOnly});
     // A script name the report would redact is not shown or saved either.
@@ -322,6 +354,9 @@ export function failureAdvice(value, t, known = knownError(value)) {
         if (key === known)
             return {...row(key, title, summary, ['', '']), plain: true};
     }
+    if (known === 'media-missing')
+        return {...row('media-missing', ['A media file is missing', '找不到素材'],
+            ['Upload or select the missing media file again, then generate.', '请重新上传或选择缺少的素材后再生成。'], ['', '']), plain: true};
     if (/Prompt outputs failed validation|Required input is missing|Value not in list|Return type mismatch|Failed to validate prompt|value (?:\S+ )?(?:smaller|bigger) than/i.test(text))
         return row('validation', ['Check generation settings', '检查生成设置'],
             ['The generation settings did not pass validation; see the error details below.', '生成设置未通过检查，可查看下方错误详情。'],
@@ -408,6 +443,8 @@ function showFailureDialog(report, t) {
     dialog.freevideoError = identity;
     dialog.setAttribute('aria-label', t('FreeVideo error', 'FreeVideo 错误'));
     const panel = createErrorPanel(t); panel.show(report, false);
+    // The dialog has no run's report to download; submitting stays on the failure card.
+    if (diagnosticReports.has(report)) panel.element.querySelector('.fv-failure-github:not([data-lora])')?.remove();
     const close = document.createElement('button'); close.type = 'button';
     close.textContent = t('Got it', '知道了'); close.autofocus = true;
     close.onclick = () => dialog.close();
@@ -451,9 +488,12 @@ export function adviceFor(report, t, value) {
         advice.title = t('The queue operation did not complete', '队列操作未完成');
         advice.summary = t('Check that ComfyUI is still running and connected, then retry.', '请确认 ComfyUI 仍在运行、连接正常后重试。');
     }
+    // The name comes from the error as it arrived; a card shown again from its report says it without one.
+    const media = advice.kind === 'media-missing' ? missingMedia(value) : null;
+    if (media) advice.summary = t(`"${media}" could not be found. Upload or select it again, then generate.`, `素材“${media}”已不存在，请重新上传或选择后再生成。`);
     // Every failure except a rejected input (which the user fixes in place) has one layout: written title,
     // Export report / Submit to GitHub, the raw error only inside the technical details.
-    const generated = advice.kind !== 'validation';
+    const generated = !['validation', 'media-missing'].includes(advice.kind);
     // A generation that stopped without a known cause is named by the stage it stopped in.
     if (generated && advice.kind === 'unknown' && report.stage === 'execution') {
         const stage = failureStage(report);
@@ -462,7 +502,9 @@ export function adviceFor(report, t, value) {
     return {advice, generated};
 }
 
-export function createErrorPanel(t) {
+// route: where a generation's diagnostic report comes from ({download, fetch, version, has}); without it the
+// button opens the feedback form.
+export function createErrorPanel(t, route = null) {
     if (!document.getElementById('freevideo-error-style')) {
         const style = document.createElement('style'); style.id = 'freevideo-error-style';
         style.textContent = `.fv-failure{border:1px solid var(--fv-danger,#dc7c7c);border-radius:var(--fv-r-md,12px);padding:12px 14px;margin:10px 0;text-align:left;min-width:0}
@@ -526,6 +568,13 @@ export function createErrorPanel(t) {
     const loadIssueModules = () => import('./feedback.js').then(feedback => import('./updates.js').then(updates => { issueModules = {feedback, updates}; })).catch(() => {});
     github.onclick = async () => {
         if (!currentReport) return;
+        // A generation with a diagnostic report goes the report route: save it, then the tip opens the form.
+        if (route?.has() && diagnosticReports.has(currentReport) && !githubLora) {
+            if (focusReportTip(head)) return;
+            try { await route.download(); } catch { return; }
+            showReportTip(head, github, t, {mode: 'downloaded', submit: () => reportIssue(route.fetch, route.version(), {save: false})});
+            return;
+        }
         if (!issueModules) await loadIssueModules();
         if (!issueModules) return;
         const draft = failureIssue(currentReport, element.freevideoKind, {lora: githubLora, t});
@@ -577,7 +626,8 @@ export function createErrorPanel(t) {
             `${node.type || t('Node', '节点')} #${node.id}${error.input ? ' · ' + error.input : ''}: ${error.message}${error.details ? ': ' + error.details : ''}`));
         const causeText = shownCause(reasons.length ? reasons.join('\n') : [report.message, report.error_details].filter(Boolean).join('\n'));
         const internal = advice.kind === 'unknown' && !['submission', 'queue'].includes(report.stage);
-        const causeInDetails = generated;
+        // A missing file is said in the explanation; where it happened and ComfyUI's wording stay in the technical details.
+        const causeInDetails = generated || advice.kind === 'media-missing';
         location.hidden = causeInDetails; detailLocation.hidden = !causeInDetails;
         detailLocation.textContent = causeInDetails ? location.textContent : '';
         if (causeInDetails) location.textContent = '';
@@ -604,10 +654,11 @@ export function createErrorPanel(t) {
         copy.hidden = generated; copyInside.hidden = !generated; copyInside.textContent = copy.textContent;
         // For a generation failure the note on removed text sits in the technical details, beside the copy button.
         privacy.hidden = generated; privacyInside.hidden = !generated;
-        const lora = advice.kind === 'lora-unusable' || advice.kind === 'lora-int8';
+        const lora = ['lora-unusable', 'lora-acceleration', 'lora-int8'].includes(advice.kind);
         // An int8 limit is not a judgement, so there is no mistake to report.
         github.hidden = !generated || advice.kind === 'lora-int8'; githubLora = lora;
         github.textContent = lora ? t('Report a mistake', '报告误判') : t('Report a problem', '提交问题');
+        github.toggleAttribute('data-lora', lora);
         if (generated && typeof window !== 'undefined') loadIssueModules();
         if (popup) showFailureDialog(report, t);
         return report;

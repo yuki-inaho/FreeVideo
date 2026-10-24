@@ -293,6 +293,10 @@ def _encode(args, request, resident, trace):
     import torch
     torch.set_num_threads(8)
     torch.set_grad_enabled(False)
+    if resident is not None and not idle:
+        # The guard counts the whole session, retained engine weights included,
+        # from the first sample; free host room before CUDA setup, not after.
+        resident.make_room('encoder', 0, ram_need=8*2**30)
     phase('encoder_cuda_setup')
     if idle:
         from .idle_encoder import gpu_preload_budget
@@ -392,7 +396,9 @@ def _encode(args, request, resident, trace):
         clip = resident.take('encoder', encoder_key)
         estimated = Path(path).stat().st_size * 1.4 + 2*2**30
         if not idle and clip is None:
-            resident.make_room('encoder', min(resident.gpu_budget, estimated), model=clip, ram_need=2*2**30)
+            # Measured: a cold encoder load peaks near 8 GiB of guarded host memory
+            # (7.7 GiB PSS); retained engine weights must make room for that.
+            resident.make_room('encoder', min(resident.gpu_budget, estimated), model=clip, ram_need=8*2**30)
         elif idle and (Path(request['cancel']).exists() or not resident.ram_fits() or resident.available() < 2*2**30):
             return dict(state='skipped', reason='No spare live memory, or a foreground request arrived')
         import comfy.model_management

@@ -241,7 +241,7 @@ class Desktop:
 
     def generate_page(self, page):
         _, page = self.scrolled(page, 1)
-        self.label(page, 'Describe your video', '描述你想生成的视频').pack(anchor='w', pady=(0, 10))
+        self.label(page, 'Describe your video', '描述想生成的视频').pack(anchor='w', pady=(0, 10))
         prompt_card = Card(page, padding=branding.space(3), radius=branding.RADIUS_MD)
         prompt_card.pack(fill='x')
         self.prompt = self.tk.Text(prompt_card.body, height=6, font=(branding.FAMILY, branding.STRONG),

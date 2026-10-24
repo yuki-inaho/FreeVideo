@@ -103,8 +103,8 @@ def identity(machine, hardware):
     for checkout, ref, expected in ((machine['vdn_root'], 'HEAD', specs['vdn']['commit']),
             (machine['comfy_root'], 'HEAD', specs['encoder']['comfy_commit']),
             (str(Path(machine['vdn_root']) / 'diffusers'), 'HEAD^{tree}', specs['diffusers']['patched_tree'])):
-        observed_ref = subprocess_output.output_external(['git', '-C', checkout, 'rev-parse', ref], timeout=10).strip()
-        dirty = subprocess_output.output_external(['git', '-C', checkout, 'status', '--porcelain', '--untracked-files=no'], timeout=10)
+        from . import network
+        observed_ref, dirty = network.repository_state(checkout, 'git', None, ref, timeout=10)
         if observed_ref != expected or dirty:
             raise ValueError('Pinned model code changed; saved tuning cannot be reused: ' + checkout)
     return {'schema': SCHEMA, 'system': hardware.system,

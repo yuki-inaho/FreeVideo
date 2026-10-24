@@ -1,6 +1,6 @@
 import {attemptClip, find} from './editor_model.js';
 import {createErrorReport} from './error_panel.js';
-import {saveReport, showReportTip, reportIssue} from './report_issue.js';
+import {saveReport, showReportTip, focusReportTip, reportIssue} from './report_issue.js';
 import {productVersion} from './updates.js';
 
 // Receipts belong to an attempt, not to saved projects or undo history.
@@ -68,6 +68,7 @@ export function createEditorFailures({api, state, jobStatuses, reasonText}) {
         report,
         async download(id, {bar, anchor, t, current = () => true}) {
             const found = receipt(id); if (!found) return;
+            if (focusReportTip(bar)) return;
             let blob;
             if (found.reportId) {
                 const response = await api.fetchApi(`/freevideo/report/${found.reportId}`);
